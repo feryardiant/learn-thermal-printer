@@ -1,0 +1,15 @@
+// Project debug tasks, See https://zed.dev/docs/debugger for more information
+[
+  {
+    "adapter": "JavaScript",
+    "label": "Bun (JavaScript)",
+    "type": "pwa-node",
+    "request": "launch",
+    "program": "bun",
+    "args": [
+      "dev"
+    ],
+    "stopOnEntry": false,
+    "skipFiles": ["<node_internals>/**"]
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "name": "termal-print",
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "webbluetooth": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.1",
+    "@types/w3c-web-serial": "^1.0.8",
+    "@types/web-bluetooth": "^0.0.21",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  },
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  }
+}

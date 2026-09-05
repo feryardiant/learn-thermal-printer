@@ -1,0 +1,9 @@
+// Project tasks configuration. See https://zed.dev/docs/tasks for more information
+[
+  {
+    "label": "Build",
+    "command": "bun",
+    "args": ["run", "build"],
+    "env": {},
+  },
+]
