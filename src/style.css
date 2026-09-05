@@ -143,3 +143,48 @@ pre {
     gap: 18px;
   }
 }
+
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text);
+}
+
+textarea {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 135%;
+  padding: 8px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text-h);
+  width: 50%;
+  min-width: 320px;
+  resize: vertical;
+}
+
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.opt {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.opt input {
+  accent-color: var(--accent);
+}

@@ -10,16 +10,26 @@
     <div id="app">
       <section id="center">
         <div>
-          <h1>Get started</h1>
-          <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
+          <h1>Thermal Print</h1>
+          <p>Print text to a Bluetooth ESC/POS printer.</p>
         </div>
 
-        <div>
-          <button id="check-btn" type="button" class="btn">Check</button>
-          <button id="connect-btn" type="button" class="btn" disabled>No device</button>
+        <div class="row">
+          <button id="check-btn" type="button" class="btn">Check printer</button>
+          <span id="device-status" class="status">No device</span>
+          <button id="forget-btn" type="button" class="btn" disabled>Forget</button>
         </div>
 
-        <pre></pre>
+        <textarea id="text-input" rows="4" placeholder="Text to print..."></textarea>
+
+        <div class="row">
+          <button id="print-btn" type="button" class="btn" disabled>Print</button>
+          <label class="opt">
+            <input id="no-cut" type="checkbox" /> No cut
+          </label>
+        </div>
+
+        <pre id="log"></pre>
       </section>
     </div>
 

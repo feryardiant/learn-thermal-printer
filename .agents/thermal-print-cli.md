@@ -165,3 +165,43 @@ bun src/cli.ts help
 - **`--codepage` option** for non-ASCII text (printer code-page selection)
 - **Wire the CLI into the web UI** now that printing works
 - **Support other printer models** — the service/characteristic UUIDs (`0000ff00`/`0000ff02`) are common for these cheap thermal printers but may differ on other models; `list` + error messages make this obvious
+
+---
+
+## 10. Web UI Implementation (2026-09-05)
+
+Brought the BLE implementation to the browser using **native Web Bluetooth** (Path A — no server).
+
+### Files changed
+
+- `index.html` — new UI: Check printer button, device status, textarea, Print button, "No cut" checkbox, log `<pre>`
+- `src/main.ts` — full Web Bluetooth flow (reuses `src/escpos.ts` builders)
+- `src/style.css` — styles for textarea, row, status, checkbox
+
+### Key Web Bluetooth requirements (learned via testing)
+
+1. **User gesture**: `requestDevice()` must be called synchronously inside a click handler (not `DOMContentLoaded`).
+2. **`optionalServices`**: The service UUID must be declared in `requestDevice()` options, or the browser throws:
+   > `Origin is not allowed to access any service. Tip: Add the service UUID to 'optionalServices' in requestDevice() options.`
+   - Fix: `requestDevice({ acceptAllDevices: true, optionalServices: [ESCPOS_SERVICE_UUID] })`
+3. **HTTPS or localhost** required (dev server uses `@vitejs/plugin-basic-ssl`).
+4. **Chrome-only** for Web Bluetooth.
+
+### Testing notes
+
+- The device chooser is a **native OS dialog** that automated clicks cannot complete — synthetic clicks are treated as "User cancelled the requestDevice() chooser."
+- A real human click is required to select the device and complete the flow.
+- Confirmed: Web Bluetooth is available (`'bluetooth' in navigator` → true), the UI loads, and the device auto-selects on a real gesture.
+
+### ESC/POS write path (browser)
+
+```ts
+const device = await navigator.bluetooth.requestDevice({
+  acceptAllDevices: true,
+  optionalServices: [ESCPOS_SERVICE_UUID],
+})
+const server = await device.gatt.connect()
+const service = await server.getPrimaryService(ESCPOS_SERVICE_UUID)
+const char = await service.getCharacteristic(ESCPOS_WRITE_CHAR_UUID)
+await char.writeValueWithoutResponse(data)
+```
