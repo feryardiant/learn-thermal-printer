@@ -1,10 +1,5 @@
 import './style.css'
-import { init, encodeText, feedLines, cut, concat, interpretEscapes } from './escpos.ts'
-
-/** ESC/POS printers commonly expose their write characteristic under this service. */
-const ESCPOS_SERVICE_UUID = '0000ff00-0000-1000-8000-00805f9b34fb'
-/** The write characteristic used to send ESC/POS data. */
-const ESCPOS_WRITE_CHAR_UUID = '0000ff02-0000-1000-8000-00805f9b34fb'
+import { DeviceFinder, Command } from './printer.ts'
 
 const $checkBtn = document.querySelector<HTMLButtonElement>('#check-btn')!
 const $printBtn = document.querySelector<HTMLButtonElement>('#print-btn')!
@@ -126,6 +121,8 @@ async function autoReconnect(): Promise<void> {
   }
 }
 
+const finder = new DeviceFinder()
+
 $checkBtn.addEventListener('click', async () => {
   if (!bluetoothSupported()) {
     log('Web Bluetooth is not available in this browser.')
@@ -150,10 +147,8 @@ $checkBtn.addEventListener('click', async () => {
 
   try {
     // Must be called synchronously within the click handler (user gesture).
-    const picked = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: [ESCPOS_SERVICE_UUID],
-    })
+    // In the browser this shows the device chooser.
+    const picked = await finder.getDevice('', '')
     setDevice(picked)
     saveDevice({ id: picked.id, name: picked.name ?? 'Unknown device' })
     log(`Selected: ${picked.name}`)
@@ -180,48 +175,14 @@ $printBtn.addEventListener('click', async () => {
   }
 
   try {
-    const data = buildEscPos(text, { feed: 3, noCut: $noCut.checked })
-    await writeEscPos(device, data)
+    // Write-with-response is used so the write is acknowledged before disconnect.
+    await new Command(text, 3, $noCut.checked, 'full').sendTo(device)
     log(`Printed ${text.length} chars to ${device.name}.`)
   } catch (err) {
     log(`Print failed: ${(err as Error).message}`)
     logSPPWorkaround()
   }
 })
-
-/** Build the ESC/POS byte sequence for a print job. */
-function buildEscPos(text: string, opts: { feed: number; noCut: boolean }): Uint8Array {
-  const parts: Uint8Array[] = [Uint8Array.from(init())]
-  parts.push(encodeText(interpretEscapes(text)))
-  parts.push(Uint8Array.from(feedLines(opts.feed)))
-  if (!opts.noCut) parts.push(Uint8Array.from(cut('full')))
-  return concat(parts)
-}
-
-/** Connect to the device's GATT server and write ESC/POS bytes. */
-async function writeEscPos(device: BluetoothDevice, data: Uint8Array): Promise<void> {
-  if (!device.gatt) {
-    throw new Error('Device has no GATT server.')
-  }
-  const server = await device.gatt.connect()
-  try {
-    const service = await server.getPrimaryService(ESCPOS_SERVICE_UUID)
-    if (!service) {
-      throw new Error(`Device does not expose ESC/POS service ${ESCPOS_SERVICE_UUID}`)
-    }
-    const char = await service.getCharacteristic(ESCPOS_WRITE_CHAR_UUID)
-    if (!char) {
-      throw new Error(`Device does not expose write characteristic ${ESCPOS_WRITE_CHAR_UUID}`)
-    }
-    await char.writeValueWithResponse(data.buffer as ArrayBuffer)
-  } finally {
-    try {
-      server.disconnect()
-    } catch {
-      // ignore disconnect errors
-    }
-  }
-}
 
 document.addEventListener('DOMContentLoaded', () => {
   if (!bluetoothSupported()) {

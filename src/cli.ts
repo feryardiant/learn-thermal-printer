@@ -1,5 +1,4 @@
-import { listBlePrinters, writeToBlePrinter, type BlePrinter } from './ble.ts'
-import { init, encodeText, feedLines, cut, concat, interpretEscapes } from './escpos.ts'
+import { DeviceFinder, Command } from './printer.ts'
 
 export function printUsage(): void {
   console.log(`Usage:
@@ -11,11 +10,11 @@ export function printUsage(): void {
 }
 
 export async function listCommand(showAll: boolean): Promise<void> {
-  const printers = await listBlePrinters()
+  const printers = await new DeviceFinder().getList()
 
   if (showAll) {
     console.log('All BLE devices found:')
-    for (const p of printers) console.log(`  ${p.name.padEnd(24)} ${p.id}`)
+    for (const p of printers) console.log(`  ${(p.name ?? '').padEnd(24)} ${p.id}`)
     return
   }
 
@@ -26,11 +25,11 @@ export async function listCommand(showAll: boolean): Promise<void> {
   }
 
   console.log(`Available ESC/POS printer${printers.length === 1 ? '' : 's'}:`)
-  for (const p of printers) console.log(`  ${p.name.padEnd(24)} ${p.id}`)
+  for (const p of printers) console.log(`  ${(p.name ?? '').padEnd(24)} ${p.id}`)
 }
 
-/** Resolve a user-supplied printer identifier to a BLE printer. */
-export function resolvePrinter(arg: string, printers: BlePrinter[]): BlePrinter | null {
+/** Resolve a user-supplied printer identifier to a BLE device. */
+export function resolvePrinter(arg: string, printers: BluetoothDevice[]): BluetoothDevice | null {
   const lower = arg.toLowerCase()
 
   // Exact id match.
@@ -38,7 +37,7 @@ export function resolvePrinter(arg: string, printers: BlePrinter[]): BlePrinter 
   if (byId) return byId
 
   // Name match (case-insensitive substring). Collect all matches.
-  const matches = printers.filter((p) => p.name.toLowerCase().includes(lower))
+  const matches = printers.filter((p) => (p.name ?? '').toLowerCase().includes(lower))
   if (matches.length === 1) return matches[0]
   if (matches.length > 1) {
     console.error(`"${arg}" matches multiple printers:`)
@@ -47,19 +46,6 @@ export function resolvePrinter(arg: string, printers: BlePrinter[]): BlePrinter 
   }
 
   return null
-}
-
-interface PrintOptions {
-  feed: number
-  noCut: boolean
-}
-
-export function buildEscPos(text: string, opts: PrintOptions): Uint8Array {
-  const parts: Uint8Array[] = [Uint8Array.from(init())]
-  parts.push(encodeText(interpretEscapes(text)))
-  parts.push(Uint8Array.from(feedLines(opts.feed)))
-  if (!opts.noCut) parts.push(Uint8Array.from(cut('full')))
-  return concat(parts)
 }
 
 export async function printCommand(args: string[]): Promise<number> {
@@ -71,7 +57,7 @@ export async function printCommand(args: string[]): Promise<number> {
   const printerArg = args[0]
   const text = args[1]
 
-  let feed = 3
+  let feed = 1
   let noCut = false
   for (let i = 2; i < args.length; i++) {
     switch (args[i]) {
@@ -91,7 +77,8 @@ export async function printCommand(args: string[]): Promise<number> {
     }
   }
 
-  const printers = await listBlePrinters()
+  const finder = new DeviceFinder()
+  const printers = await finder.getList()
   const printer = resolvePrinter(printerArg, printers)
   if (!printer) {
     console.error(`No printer found matching "${printerArg}".`)
@@ -103,9 +90,9 @@ export async function printCommand(args: string[]): Promise<number> {
     return 1
   }
 
-  const data = buildEscPos(text, { feed, noCut })
   try {
-    await writeToBlePrinter(printer, data)
+    const device = await finder.getDevice(printer.id, printer.name ?? 'Unknown device')
+    await new Command(text, feed, noCut, 'full').sendTo(device)
   } catch (err) {
     console.error(`Failed to print to ${printer.name}: ${(err as Error).message}`)
     return 1
