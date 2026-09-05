@@ -77,7 +77,10 @@ export async function writeToBlePrinter(
     if (!char) {
       throw new Error(`Printer "${printer.name}" does not expose write characteristic ${ESCPOS_WRITE_CHAR_UUID}`)
     }
-    await char.writeValueWithoutResponse(data.buffer as ArrayBuffer)
+    // Use write-with-response so the write is acknowledged before we disconnect.
+    // writeValueWithoutResponse is fire-and-forget: if we disconnect immediately
+    // after, the bytes can be dropped before reaching the printer (flaky prints).
+    await char.writeValueWithResponse(data.buffer as ArrayBuffer)
   } finally {
     try {
       await server.disconnect()

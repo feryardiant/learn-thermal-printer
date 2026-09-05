@@ -1,16 +1,16 @@
 import { listBlePrinters, writeToBlePrinter, type BlePrinter } from './ble.ts'
 import { init, encodeText, feedLines, cut, concat, interpretEscapes } from './escpos.ts'
 
-function printUsage(): void {
+export function printUsage(): void {
   console.log(`Usage:
-  bun src/cli.ts list [--all]        List available ESC/POS printers
-  bun src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]
+  node src/cli.ts list [--all]        List available ESC/POS printers
+  node src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]
                                      Print text to a printer
 
 <printer> is matched by name (e.g. "RPP02N") or a BLE device id.`)
 }
 
-async function listCommand(showAll: boolean): Promise<void> {
+export async function listCommand(showAll: boolean): Promise<void> {
   const printers = await listBlePrinters()
 
   if (showAll) {
@@ -30,7 +30,7 @@ async function listCommand(showAll: boolean): Promise<void> {
 }
 
 /** Resolve a user-supplied printer identifier to a BLE printer. */
-function resolvePrinter(arg: string, printers: BlePrinter[]): BlePrinter | null {
+export function resolvePrinter(arg: string, printers: BlePrinter[]): BlePrinter | null {
   const lower = arg.toLowerCase()
 
   // Exact id match.
@@ -54,7 +54,7 @@ interface PrintOptions {
   noCut: boolean
 }
 
-function buildEscPos(text: string, opts: PrintOptions): Uint8Array {
+export function buildEscPos(text: string, opts: PrintOptions): Uint8Array {
   const parts: Uint8Array[] = [Uint8Array.from(init())]
   parts.push(encodeText(interpretEscapes(text)))
   parts.push(Uint8Array.from(feedLines(opts.feed)))
@@ -62,9 +62,9 @@ function buildEscPos(text: string, opts: PrintOptions): Uint8Array {
   return concat(parts)
 }
 
-async function printCommand(args: string[]): Promise<number> {
+export async function printCommand(args: string[]): Promise<number> {
   if (args.length < 2) {
-    console.error('Usage: bun src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]')
+    console.error('Usage: node src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]')
     return 1
   }
 
@@ -95,7 +95,11 @@ async function printCommand(args: string[]): Promise<number> {
   const printer = resolvePrinter(printerArg, printers)
   if (!printer) {
     console.error(`No printer found matching "${printerArg}".`)
-    console.error('Run `bun src/cli.ts list` to see available printers.')
+    console.error('Run `node src/cli.ts list` to see available printers.')
+    console.error('')
+    console.error('If the printer is paired but not listed, it may be in SPP (classic) mode,')
+    console.error('not advertising BLE. Enable BLE mode on the printer (e.g. connect to it once')
+    console.error('with a Bluetooth printer app) so it advertises its BLE service, then retry.')
     return 1
   }
 
@@ -111,7 +115,7 @@ async function printCommand(args: string[]): Promise<number> {
   return 0
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const argv = process.argv
   let i = 1
   if (argv[i] === 'run') i++
@@ -136,4 +140,14 @@ async function main(): Promise<number> {
   }
 }
 
-process.exit(await main())
+// Only run the CLI when executed directly (not when imported by tests).
+if (import.meta.main) {
+  // bun segfaults on the webbluetooth native binding (bun#18546 class of bug).
+  // The CLI must be run with Node: `node src/cli.ts ...`.
+  if (typeof Bun !== 'undefined') {
+    console.error('The CLI must be run with Node (bun crashes on the webbluetooth native binding).')
+    console.error('Usage: node src/cli.ts <command>')
+    process.exit(1)
+  }
+  process.exit(await main())
+}

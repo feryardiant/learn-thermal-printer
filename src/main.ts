@@ -57,6 +57,16 @@ function bluetoothSupported(): boolean {
   return 'bluetooth' in navigator
 }
 
+/**
+ * Explain the likely SPP-mode situation when BLE selection fails or a print
+ * targets a printer that isn't advertising BLE.
+ */
+function logSPPWorkaround(): void {
+  log('Tip: If the printer is paired but not found/printing, it may be in SPP')
+  log('(classic) mode, not advertising BLE. Connect to it once with a Bluetooth')
+  log('printer app to switch it to BLE mode, then retry.')
+}
+
 function setDevice(d: BluetoothDevice | undefined): void {
   device = d
   if (d) {
@@ -150,6 +160,7 @@ $checkBtn.addEventListener('click', async () => {
   } catch (err) {
     setDevice(undefined)
     log(`Selection failed: ${(err as Error).message}`)
+    logSPPWorkaround()
   }
 })
 
@@ -174,6 +185,7 @@ $printBtn.addEventListener('click', async () => {
     log(`Printed ${text.length} chars to ${device.name}.`)
   } catch (err) {
     log(`Print failed: ${(err as Error).message}`)
+    logSPPWorkaround()
   }
 })
 
@@ -201,7 +213,7 @@ async function writeEscPos(device: BluetoothDevice, data: Uint8Array): Promise<v
     if (!char) {
       throw new Error(`Device does not expose write characteristic ${ESCPOS_WRITE_CHAR_UUID}`)
     }
-    await char.writeValueWithoutResponse(data.buffer as ArrayBuffer)
+    await char.writeValueWithResponse(data.buffer as ArrayBuffer)
   } finally {
     try {
       server.disconnect()

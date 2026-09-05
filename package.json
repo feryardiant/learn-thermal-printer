@@ -10,13 +10,17 @@
     "@types/w3c-web-serial": "^1.0.8",
     "@types/web-bluetooth": "^0.0.21",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "happy-dom": "^20.14.0",
     "typescript": "^7.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
   },
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   }
 }

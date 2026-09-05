@@ -78,7 +78,7 @@ async function writeEscPos(device: BluetoothDevice, data: Uint8Array): Promise<v
   const server = await device.gatt.connect()
   const service = await server.getPrimaryService(ESCPOS_SERVICE_UUID)
   const char = await service.getCharacteristic(ESCPOS_WRITE_CHAR_UUID)
-  await char.writeValueWithoutResponse(data)
+  await char.writeValueWithResponse(data)
 }
 ```
 
@@ -211,6 +211,54 @@ saveDevice({ id: picked.id, name: picked.name })
 ### Note
 
 `getDevices()` is called from the click handler, so it works whether or not the browser requires a user gesture for it (both `requestDevice` and `getDevices` are safest inside a click handler).
+
+---
+
+## 12. Tests (vitest)
+
+Functional tests for the entire codebase, runnable **with or without the device** (CI-safe).
+
+### Setup
+
+- `vitest` + `happy-dom` (dev deps)
+- `vitest.config.ts` — default `node` env; `main.test.ts` opts into `happy-dom` via a per-file comment
+- `tsconfig.test.json` — typechecks test files (main `tsconfig.json` excludes `*.test.ts` so the production build stays clean)
+
+### Scripts
+
+```
+bun run test         # run once
+bun run test:watch   # watch mode
+```
+
+### Test files
+
+| File | Env | Covers |
+|------|-----|--------|
+| `src/escpos.test.ts` | node | ESC/POS builders: init, encodeText, feedLines, cut, concat, interpretEscapes |
+| `src/ble.test.ts` | node | `listBlePrinters` filtering + `writeToBlePrinter` (webbluetooth mocked) |
+| `src/cli.test.ts` | node | `resolvePrinter`, `buildEscPos`, `listCommand`, `printCommand` (ble mocked) |
+| `src/main.test.ts` | happy-dom | Web UI: page load, check/print/forget, localStorage persistence, auto-reconnect (navigator.bluetooth mocked) |
+
+### How it runs without a device
+
+- `webbluetooth` is **mocked** in `ble.test.ts` (via `vi.mock`)
+- `./ble.ts` is **mocked** in `cli.test.ts`
+- `navigator.bluetooth` is **mocked** in `main.test.ts` (via `Object.defineProperty`)
+- No real Bluetooth hardware is touched — all 46 tests run in CI
+
+### Refactors to enable testing
+
+- `src/cli.ts`: exported `printUsage`, `listCommand`, `resolvePrinter`, `buildEscPos`, `printCommand`, `main`; guarded the auto-run with `if (import.meta.main)` so importing the module doesn't execute the CLI
+- `tsconfig.json`: added `"bun"` to `types` (for `import.meta.main`) and excluded `*.test.ts`
+
+### Validation
+
+- `bun run test` → **46 tests pass**
+- `bunx tsc --noEmit` → clean
+- `bunx tsc -p tsconfig.test.json --noEmit` → clean
+- `bun run build` → succeeds
+- `bun src/cli.ts list` → still works after the refactor
 
 ### Important finding: `getDevices()` may not exist in this Chrome build
 

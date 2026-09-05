@@ -104,7 +104,7 @@ Despite macOS System Settings showing the printer as **"Connected"**, the underl
 - `ESCPOS_SERVICE_UUID = '0000ff00-0000-1000-8000-00805f9b34fb'`
 - `ESCPOS_WRITE_CHAR_UUID = '0000ff02-0000-1000-8000-00805f9b34fb'`
 - `listBlePrinters()` — scans BLE, filters devices by ESC/POS name patterns (`rpp`, `pos`, `printer`, `thermal`, `tm-`, `epson`, etc.)
-- `writeToBlePrinter()` — scans for the printer by id, connects, writes ESC/POS bytes via `writeValueWithoutResponse`, disconnects
+- `writeToBlePrinter()` — scans for the printer by id, connects, writes ESC/POS bytes via `writeValueWithResponse`, disconnects
 
 ### `src/escpos.ts` — commands
 
@@ -116,12 +116,14 @@ Despite macOS System Settings showing the printer as **"Connected"**, the underl
 
 ## 6. Usage
 
+**The CLI must be run with Node**, not bun. bun segfaults on the `webbluetooth` native binding (bun#18546 class of bug). Running under bun prints a clear error instead of crashing.
+
 ```
-bun src/cli.ts list                          # list ESC/POS printers
-bun src/cli.ts list --all                    # all BLE devices found
-bun src/cli.ts print <printer> "Text"        # print text
-bun src/cli.ts print <printer> "a\nb" --no-cut --feed 2
-bun src/cli.ts help
+node src/cli.ts list                          # list ESC/POS printers
+node src/cli.ts list --all                    # all BLE devices found
+node src/cli.ts print <printer> "Text"        # print text
+node src/cli.ts print <printer> "a\nb" --no-cut --feed 2
+node src/cli.ts help
 ```
 
 `<printer>` is matched by **name** (e.g. `RPP02N`) or **BLE device id**.
@@ -143,6 +145,16 @@ bun src/cli.ts help
   ```
 - Known issue: oven-sh/bun#18546
 - **Workaround**: use plain file I/O for SPP, or run under Node. (Moot now — we use BLE.)
+
+### 8.1b `webbluetooth` native binding segfaults bun
+
+- Running the CLI with `bun src/cli.ts print ...` **segfaults** bun:
+  ```
+  panic(main thread): Segmentation fault at address 0x0
+  ```
+- Same class of bug as `serialport` (bun's native-module support is fragile).
+- **Fix**: the CLI must run under **Node**. `src/cli.ts` detects bun and prints a clear error instead of crashing.
+- The code is plain TS/JS and runs identically under Node.
 
 ### 8.2 `webbluetooth` works under both bun and Node
 
@@ -203,5 +215,5 @@ const device = await navigator.bluetooth.requestDevice({
 const server = await device.gatt.connect()
 const service = await server.getPrimaryService(ESCPOS_SERVICE_UUID)
 const char = await service.getCharacteristic(ESCPOS_WRITE_CHAR_UUID)
-await char.writeValueWithoutResponse(data)
+await char.writeValueWithResponse(data)
 ```
