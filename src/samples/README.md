@@ -1,39 +1,75 @@
-# Receipt Print Markup Reference
+# ReceiptLine Markup Reference
 
-Plain-text markup for ESC/POS receipt printing. Each print line starts with an
-alignment column, then a pipe, then the content.
+This project uses **ReceiptLine** (OFSC ReceiptLine Specification), a vendor-neutral receipt description language. The library `receiptline` transforms ReceiptLine documents into ESC/POS bytes.
 
-## Alignment prefix
+## Basic structure
 
-The leading column tells the printer how to align the whole line.
+Columns are separated by `|`. Each line is one print row.
 
-| Prefix | Meaning            |
-|--------|--------------------|
-| `l `   | left-align         |
-| `c `   | center             |
-| `r `   | right-align        |
-| `  `   | leave default      |
-| `  ` (blank content) | blank line |
+```
+|^^^Header^^^|
+|"subtitle"|
+Item        | $5.00
+-
+|^"Total: $25"^|
+```
 
-The prefix is written as `<code>` + a space + `|` + a space.
-Examples: `c | Centered`, `l | Left`, `r | Right`, `  | ` (blank).
+## Alignment
 
-## Inline styles (inside the content)
+Alignment is determined by how the text sits relative to the pipe:
 
-| Token          | Meaning                  |
-|----------------|--------------------------|
-| `# ...`        | large heading block (starts the line) |
-| `**text**`     | **bold**                 |
-| `*text*`       | *small / condensed* (Font B) |
-| `__text__`     | __underline__            |
-| `====`         | horizontal divider       |
+| Syntax | Alignment |
+|--------|-----------|
+| `\|text` | Left |
+| `text\|` | Right |
+| `\|text\|` | Center |
+| `text` (no pipe) | Default (left, full width) |
 
-Inline tokens can be mixed within one line, e.g. `r | **Total: $25**`.
+## Inline formatting
 
-## Notes
+| Token | Effect |
+|-------|--------|
+| `^text^` | Double width |
+| `^^text^^` | Double height |
+| `^^^…^^^^^^^` | 2×–6× size (more carets = larger) |
+| `"text"` | Emphasis (bold on most printers) |
+| `_text_` | Underline |
+| `` `text` `` | Invert (white-on-black) |
+| `~` | Non-breaking space |
 
-- Alignment applies per **print line** (whole line only).
-- Use blank alignment lines (`  | `) for spacing.
-- Keep each content line within the printable width (≈32 chars for Font A
-  on a 58 mm / 203 dpi receipt) to avoid wrapping.
-- Sizing is discrete (Font A / Font B / integer scale), not point-based.
+## Special lines
+
+| Line | Meaning |
+|------|---------|
+| `-` | Horizontal rule (solid line via raster bar) |
+| `=` | Paper cut (at end of document) |
+| (blank line) | Empty row / spacing |
+
+## Properties
+
+Single-column lines can be wrapped in `{ key: value; }` to set properties:
+
+```
+{ align: center; text: "Wrapped text that will fill the line"; }
+```
+
+| Property | Values | Description |
+|----------|--------|-------------|
+| `align` | `left`, `center`, `right` | Line alignment |
+| `width` | number | Column width in characters |
+| `border` | `true`, `false` | Column border |
+| `text` | string | Wrapping text content |
+| `code` | `ean13`, `code128`, `qrcode`, ... | Generate a barcode |
+| `option` | string | Barcode/QR options |
+| `image` | path | Print an image (Node only) |
+| `command` | escape sequence | Raw ESC/POS command |
+
+## Examples
+
+See the sample files in this directory for full documents:
+- `01-recipt.md` — simple receipt
+- `02-invoice.md` — invoice with line items
+- `03-order-ticket.md` — kitchen order
+- `04-event-ticket.md` — event ticket
+- `05-menu.md` — menu
+- `06-test-card.md` — formatting test card
