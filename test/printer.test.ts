@@ -30,10 +30,11 @@ describe('solidRuleLines', () => {
     const out = solidRuleLines('head\n-\ntail')
     expect(out).toMatch(/^head\n\{x:/)
     const bar = out.match(/\{x:([^}]+)\}/)![1]
-    // GS v 0 m xL xH yL yH ... — a full-width raster strip (48 bytes/row × 4 rows)
-    expect(bar.startsWith('\\x1dv0\\x00\\x30\\x00\\x04\\x00')).toBe(true)
+    // half-line feed above, then GS v 0 m xL xH yL yH ... full-width raster strip
+    expect(bar.startsWith('\\x1bJ\\x0f\\x1dv0\\x00\\x30\\x00\\x04\\x00')).toBe(true)
     expect((bar.match(/\\xff/g) ?? [])).toHaveLength(48 * 4) // all-black data
-    expect(bar.endsWith('\\n')).toBe(true) // trailing newline → own printed row
+    // half-line feed below (also clears the bar)
+    expect(bar.endsWith('\\x1bJ\\x0f')).toBe(true)
   })
 
   it('rewrites any standalone dash line (multi/unpadded) once', () => {

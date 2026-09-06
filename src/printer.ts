@@ -3,28 +3,33 @@
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
 
-// A horizontal-rule line for the RPP02N. ReceiptLine's built-in `-` rule fills
-// the row with byte 0x95, which this printer renders as `ò`; a bare CP437 bar
-// (0xc4) renders blank because the printer's default multibyte page doesn't know
-// it. The font-independent way to draw a solid line is a `GS v 0` raster strip —
-// the same command receiptline uses for QR codes, which the RPP02N honors. We
-// rewrite bare-dash lines into a raw `{x:...}` command that emits a full-width
-// all-black raster bar.
-const RULE_BAR = buildRuleBar()
+interface RuleBarOptions {
+  /** Half-height blank lines (ESC J partial feeds) above and below. */
+  padding: number
+}
 
-/** Build a full-width solid bar as a `GS v 0` raster strip. */
-function buildRuleBar(): string {
+/**
+ * Build a full-width solid bar as a `GS v 0` raster strip.
+ */
+function buildRuleBar(opts: RuleBarOptions = { padding: 1 }): string {
   // cpl=32 chars × 12 dots/char = 384 dots wide → 48 bytes/row.
   const bytesPerRow = 48
   const height = 4 // dots tall — a clearly visible line
   const data = '\\xff'.repeat(bytesPerRow * height)
+
+  // ESC J n: print-and-feed n/180". 15 ≈ half of the default 1/6" (30/180) line,
+  // so the padding is half-height instead of a full LF. The trailing feed also
+  // clears the 4-dot raster bar, so no extra LF is needed after it.
+  const padding = '\\x1bJ\\x0f'
+
   // GS v 0 m xL xH yL yH d1...dk
   return (
+    padding.repeat(opts.padding) + // half-height blank above the bar
     '\\x1dv0\\x00' + // GS v 0, m=0 (normal)
     '\\x30\\x00' + // xL=48, xH=0 (width in bytes)
     '\\x04\\x00' + // yL=4, yH=0 (height in dots)
     data +
-    '\\n'
+    padding.repeat(opts.padding) // half-height blank below (also clears the bar)
   )
 }
 
@@ -37,6 +42,15 @@ function buildRuleBar(): string {
  * bytes, so this needs no PNG decoding and works in the browser path too.
  */
 export function solidRuleLines(doc: string): string {
+  // A horizontal-rule line for the RPP02N. ReceiptLine's built-in `-` rule fills
+  // the row with byte 0x95, which this printer renders as `ò`; a bare CP437 bar
+  // (0xc4) renders blank because the printer's default multibyte page doesn't know
+  // it. The font-independent way to draw a solid line is a `GS v 0` raster strip —
+  // the same command receiptline uses for QR codes, which the RPP02N honors. We
+  // rewrite bare-dash lines into a raw `{x:...}` command that emits a full-width
+  // all-black raster bar.
+  const RULE_BAR = buildRuleBar()
+
   return doc.replace(/^[\t ]*-+[\t ]*$/gm, `{x:${RULE_BAR}}`)
 }
 
