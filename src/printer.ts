@@ -35,11 +35,11 @@ export class Device {
    * Send a raw ESC/POS byte buffer to a device over its GATT write
    * characteristic.
    *
-   * This printer loses ACKs on `writeValueWithResponse` (it prints the bytes but
-   * the ACK is lost), which made retries resend the whole buffer and duplicate the
-   * header. So we use `writeValueWithoutResponse` (fire-and-forget) to stream the
-   * chunks after the link settles — the printer accepts and prints them reliably
-   * without false failures.
+   * Chunks the data into MTU-sized writes, sending each chunk as its own
+   * exact-size buffer. We use `writeValueWithResponse` for reliability; the key
+   * detail is copying each chunk via `.slice().buffer` — webbluetooth reads
+   * `value.buffer` verbatim (ignoring byteOffset), so passing a subarray view
+   * would send the whole buffer and duplicate the print.
    */
   async send(doc: string, cutting: boolean = true, feed = 3) {
     const server = await this.connect()
@@ -52,11 +52,12 @@ export class Device {
 
     // BLE ATT limits each write to (MTU - 3) bytes. Chunk larger payloads and
     // pace them so the printer can process each chunk.
-    const CHUNK = 240 // MTU 240 minus the 3-byte ATT header
+    const CHUNK = 237 // MTU 240 minus the 3-byte ATT header
     for (let offset = 0; offset < bytes.length; offset += CHUNK) {
-      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length))
-      await char.writeValueWithResponse(chunk.buffer)
-      if (offset + CHUNK < bytes.length) {
+      const end = Math.min(offset + CHUNK, bytes.length)
+      const chunk = bytes.slice(offset, end).buffer // .slice copies → exact buffer
+      await char.writeValueWithResponse(chunk)
+      if (end < bytes.length) {
         // Small inter-chunk delay so the printer isn't overwhelmed.
         await new Promise((r) => setTimeout(r, 20))
       }
@@ -80,11 +81,12 @@ export class Device {
 
     /**
      * Convert receiptline's binary-string output (one char = one byte, 0–255)
-     * into a Uint8Array, preserving raw bytes >127.
+     * into a Uint8Array, preserving raw bytes >127. Grow by 3 to prepend the feed
+     * without overwriting the document's first bytes (init command / header).
      */
-    const buffer = new Uint8Array(data.length)
+    const buffer = new Uint8Array(data.length + 3)
     for (let i = 0; i < data.length; i++) {
-      buffer[i] = data.charCodeAt(i) & 0xff
+      buffer[i + 3] = data.charCodeAt(i) & 0xff
     }
 
     // Prepend `ESC d feed` — advance the paper below the content before the cut.
@@ -173,7 +175,8 @@ export class DeviceFinder {
       return devices.find((p) => p.id === opt.id)
     }
 
-    const matches = devices.filter((p) => p.name.toLowerCase().includes(opt.name.toLowerCase()))
+    const needle = (opt.name ?? '').toLowerCase()
+    const matches = devices.filter((p) => (p.name ?? '').toLowerCase().includes(needle))
 
     if (matches.length === 1) {
       return matches[0]

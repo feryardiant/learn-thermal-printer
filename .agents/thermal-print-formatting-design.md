@@ -296,3 +296,68 @@ with the earlier tests, the RPP02N's BLE link drops at an unpredictable byte cou
 
 **So the practical workaround remains:** re-stabilize via the Thermer app or a
 power-cycle, print while the link is fresh, and keep the pipeline best-effort.
+
+---
+
+## 14. ACTUAL ROOT CAUSE FOUND & RESOLVED (2026-09-06)
+
+All the connection-instability / write-method theories were **wrong** (or at best
+red herrings). The real culprit was a single bug in the chunking loop, in the
+`Device.send()` implementation.
+
+### The bug: `subarray(...).buffer` sends the whole buffer, not the chunk
+
+```ts
+const chunk = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length))
+await char.writeValueWithResponse(chunk.buffer)
+```
+
+`Uint8Array.prototype.subarray` returns a **view** that shares the underlying
+`ArrayBuffer`. `webbluetooth`'s `writeValue()` does:
+
+```ts
+const arrayBuffer = isView(value) ? value.buffer : value;  // ignores byteOffset!
+const dataView = new DataView(arrayBuffer);
+```
+
+So passing `chunk.buffer` sent the **entire 923-byte (or larger) buffer** on every
+iteration, ignoring the chunk's byteOffset/byteLength.
+
+### Why it produced the symptoms
+
+The loop ran `bytes.length / CHUNK` times. Each iteration wrote the **whole
+document**, so the printer printed the document once per chunk count:
+
+| Doc | bytes | chunks (237) | prints observed |
+|-----|-------|--------------|-----------------|
+| 01-recipt | 923 | 4 | 4× |
+| 02-invoice | 1959 | 9 | ~5–6× |
+| 03-order-ticket | 1533 | 7 | 6× |
+
+This also **explains why `writeValueWithoutResponse` prints dropped early** in
+eartier tests: same `subarray(...).buffer` bug combined with fire-and-forget meant
+the (wrong) whole-buffer writes were inconsistent/partial.
+
+### The fix
+
+Copy each chunk into its own **exact-size ArrayBuffer** so the write sends only
+that chunk:
+
+```ts
+const chunk = bytes.slice(offset, end).buffer  // .slice() copies -> exact buffer
+await char.writeValueWithResponse(chunk)
+```
+
+### Resolution
+
+- Kept **`writeValueWithResponse`** and a proper 237-byte chunk size.
+- Each chunk is a fresh exact-size buffer (via `.slice().buffer`).
+- All **6 sample documents print correctly, once each, fully** — verified on paper:
+  01, 02, 03, 04, 05, 06 all printed one-by-one successfully.
+
+### Conclusion
+
+The multi-print (and earlier partial-print) bugs were **code bugs in the chunking
+loop**, not printer firmware instability or write-method semantics. The printer
+itself was fine all along; our chunking was sending duplicate/wrong-sized writes.
+The earlier flakiness was largely this bug surfacing in different forms.

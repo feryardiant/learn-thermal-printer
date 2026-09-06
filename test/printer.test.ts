@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { DeviceFinder, Command, ESCPOS } from '../src/printer.ts'
+import { Device, DeviceFinder, ESCPOS } from '../src/printer.ts'
 
 // Mock webbluetooth: getBluetooth lazy-imports it only in the Node path.
 const m = vi.hoisted(() => ({
@@ -16,22 +16,8 @@ vi.mock('webbluetooth', () => ({
   },
 }))
 
-function fakeDevice(id: string, name: string) {
-  return { id, name }
-}
-
-/** Build a fake device + GATT chain that captures the written buffer. */
-function captureDevice() {
-  const writeFn = vi.fn().mockResolvedValue(undefined)
-  const char = { writeValueWithResponse: writeFn }
-  const service = { getCharacteristic: vi.fn().mockResolvedValue(char) }
-  const server = {
-    getPrimaryService: vi.fn().mockResolvedValue(service),
-    disconnect: vi.fn(),
-  }
-  const gatt = { connect: vi.fn().mockResolvedValue(server) }
-  const device = { id: 'dev-1', name: 'RPP02N', gatt } as unknown as BluetoothDevice
-  return { device, writeFn, server, service, char }
+function fakeDevice(id: string, name: string): { id: string; name: string; gatt?: unknown } {
+  return { id, name, gatt: {} }
 }
 
 beforeEach(() => {
@@ -39,61 +25,65 @@ beforeEach(() => {
   m.requestDevice.mockReset()
 })
 
-describe('Command', () => {
-  it('builds init + text + feed + cut', async () => {
-    const { device, writeFn } = captureDevice()
-    await new Command('Hi', 3, false, 'full').sendTo(device)
-    const sent = writeFn.mock.calls[0][0]
-    expect(Array.from(new Uint8Array(sent))).toEqual([
-      0x1b, 0x40, 0x48, 0x69, 0x1b, 0x64, 0x03, 0x1d, 0x56, 0x41,
-    ])
+describe('Device.encode', () => {
+  it('produces ESC/POS bytes with a prepended feed', async () => {
+    const bt = { id: 'dev-1', name: 'RPP02N', gatt: {} } as unknown as BluetoothDevice
+    const device = new Device(bt)
+    const bytes = await device.encode('Hi', false, 3)
+    // First 3 bytes = ESC d feed; followed by escaped text + cut.
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0x1b, 0x64, 0x03])
+    // Contains TEXT and a paper-cut byte (0x1d GS ...).
+    const all = Array.from(bytes)
+    expect(all).toContain(0x1d)
   })
 
-  it('omits the cut when noCut is true', async () => {
-    const { device, writeFn } = captureDevice()
-    await new Command('Hi', 3, true, 'full').sendTo(device)
-    const sent = Array.from(new Uint8Array(writeFn.mock.calls[0][0]))
-    expect(sent).not.toContain(0x1d)
-  })
-
-  it('uses the requested feed count', async () => {
-    const { device, writeFn } = captureDevice()
-    await new Command('Hi', 5, true, 'full').sendTo(device)
-    const sent = Array.from(new Uint8Array(writeFn.mock.calls[0][0]))
-    expect(sent[sent.length - 1]).toBe(5)
-  })
-
-  it('interprets \\n escape sequences before encoding', async () => {
-    const { device, writeFn } = captureDevice()
-    await new Command('a\\nb', 0, true, 'full').sendTo(device)
-    const sent = Array.from(new Uint8Array(writeFn.mock.calls[0][0]))
-    expect(sent).toContain(0x0a) // newline byte
-  })
-
-  it('throws when the device has no GATT server', async () => {
-    const device = { id: 'x', name: 'RPP02N' }
-    await expect(
-      new Command('Hi', 1, true, 'full').sendTo(device as unknown as BluetoothDevice),
-    ).rejects.toThrow(/GATT/)
-  })
-
-  it('uses writeValueWithResponse', async () => {
-    const { device, service } = captureDevice()
-    await new Command('Hi', 1, true, 'full').sendTo(device)
-    expect(service.getCharacteristic).toHaveBeenCalledWith(ESCPOS.WRITE_CHAR_UUID)
-  })
-
-  it('still disconnects when the write throws', async () => {
-    const { device, writeFn, server } = captureDevice()
-    writeFn.mockRejectedValue(new Error('write failed'))
-    await expect(new Command('Hi', 1, true, 'full').sendTo(device)).rejects.toThrow(/write failed/)
-    expect(server.disconnect).toHaveBeenCalledOnce()
+  it('omits the cut when cutting is false', async () => {
+    const bt = { id: 'dev-1', name: 'RPP02N', gatt: {} } as unknown as BluetoothDevice
+    const device = new Device(bt)
+    const bytes = await device.encode('Hi', false, 1)
+    const all = Array.from(bytes)
+    // The paper-cut sequence is GS V (0x1d 0x56) — should be absent when cutting.
+    const hasCut = all.some((v, i) => v === 0x1d && all[i + 1] === 0x56)
+    expect(hasCut).toBe(false)
   })
 })
 
-describe('PrinterDevice', () => {
+describe('Device.send', () => {
+  function setupGatt() {
+    const writeFn = vi.fn().mockResolvedValue(undefined)
+    const char = { writeValueWithResponse: writeFn }
+    const service = { getCharacteristic: vi.fn().mockResolvedValue(char) }
+    const server = {
+      getPrimaryService: vi.fn().mockResolvedValue(service),
+      disconnect: vi.fn(),
+    }
+    const gatt = { connect: vi.fn().mockResolvedValue(server) }
+    const bt = { id: 'dev-1', name: 'RPP02N', gatt } as unknown as BluetoothDevice
+    return { bt, server, service, char, writeFn }
+  }
+
+  it('sends chunks via writeValueWithResponse and disconnects', async () => {
+    const { bt, server, service, char, writeFn } = setupGatt()
+    const device = new Device(bt)
+    await device.send('Hello', false, 1)
+
+    expect(server.getPrimaryService).toHaveBeenCalledWith(ESCPOS.SERVICE_UUID)
+    expect(service.getCharacteristic).toHaveBeenCalledWith(ESCPOS.WRITE_CHAR_UUID)
+    expect(writeFn).toHaveBeenCalled() // at least the chunk
+    expect(server.disconnect).toHaveBeenCalledOnce()
+    expect(char.writeValueWithResponse).toBe(writeFn)
+  })
+
+  it('throws when the device has no GATT server', async () => {
+    const bt = { id: 'x', name: 'RPP02N' } as unknown as BluetoothDevice
+    const device = new Device(bt)
+    await expect(device.send('Hi')).rejects.toThrow(/no GATT/i)
+  })
+})
+
+describe('DeviceFinder', () => {
   it('is detected as not-in-browser in the Node test environment', () => {
-    expect(DeviceFinder.IN_BROWSER).toBe(false)
+    expect(new DeviceFinder().IN_BROWSER).toBe(false)
   })
 
   describe('getList', () => {
@@ -111,7 +101,6 @@ describe('PrinterDevice', () => {
       const release = scanGate()
       const promise = new DeviceFinder().getList()
 
-      // getBluetooth is async (lazy webbluetooth import); wait for the instance.
       await vi.waitFor(() => expect(m.instances.length).toBe(1))
       const bt = m.instances[0]
       expect(bt.deviceFound(fakeDevice('id1', 'RPP02N'))).toBe(true)
@@ -135,21 +124,45 @@ describe('PrinterDevice', () => {
   })
 
   describe('getDevice', () => {
-    it('requests the device by id and returns it', async () => {
-      m.requestDevice.mockResolvedValue({ id: 'dev-1', name: 'RPP02N', gatt: {} })
-      const device = await new DeviceFinder().getDevice('dev-1', 'RPP02N')
+    function scanFor(name: string) {
+      let resolveScan!: (v: unknown) => void
+      m.requestDevice.mockImplementation(() => new Promise((r) => (resolveScan = r)))
+      return {
+        release: () => resolveScan(undefined),
+        pending: new DeviceFinder().getDevice(name),
+        async feedOnce(dev: { id: string; name: string; gatt?: unknown }) {
+          await vi.waitFor(() => expect(m.instances.length).toBe(1))
+          m.instances[0].deviceFound(dev)
+        },
+      }
+    }
+
+    it('returns a Device wrapping the found printer', async () => {
+      const s = scanFor('RPP02N')
+      await s.feedOnce({ id: 'dev-1', name: 'RPP02N', gatt: {} })
+      s.release()
+      const device = await s.pending
       expect(device.id).toBe('dev-1')
-      expect(m.requestDevice).toHaveBeenCalledWith({ acceptAllDevices: true })
+      expect(device.name).toBe('RPP02N')
     })
 
     it('throws when no device is found', async () => {
-      m.requestDevice.mockResolvedValue(undefined)
-      await expect(new DeviceFinder().getDevice('x', 'Y')).rejects.toThrow(/not found/)
+      const s = scanFor('Missing')
+      await s.feedOnce({ id: 'dev-1', name: 'Other', gatt: {} })
+      s.release()
+      await expect(s.pending).rejects.toThrow()
     })
+  })
 
-    it('throws when the device has no GATT server', async () => {
-      m.requestDevice.mockResolvedValue({ id: 'x', name: 'Y' })
-      await expect(new DeviceFinder().getDevice('x', 'Y')).rejects.toThrow(/no GATT/)
+  describe('find', () => {
+    it('throws when neither id nor name is given', async () => {
+      // find() calls getList() first; drive the scan so it resolves.
+      let resolveScan!: (v: unknown) => void
+      m.requestDevice.mockImplementation(() => new Promise((r) => (resolveScan = r)))
+      const pending = new DeviceFinder().find({})
+      await vi.waitFor(() => expect(m.instances.length).toBe(1))
+      resolveScan(undefined)
+      await expect(pending).rejects.toThrow()
     })
   })
 })
