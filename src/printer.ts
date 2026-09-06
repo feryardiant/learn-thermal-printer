@@ -3,6 +3,43 @@
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
 
+// A horizontal-rule line for the RPP02N. ReceiptLine's built-in `-` rule fills
+// the row with byte 0x95, which this printer renders as `ò`; a bare CP437 bar
+// (0xc4) renders blank because the printer's default multibyte page doesn't know
+// it. The font-independent way to draw a solid line is a `GS v 0` raster strip —
+// the same command receiptline uses for QR codes, which the RPP02N honors. We
+// rewrite bare-dash lines into a raw `{x:...}` command that emits a full-width
+// all-black raster bar.
+const RULE_BAR = buildRuleBar()
+
+/** Build a full-width solid bar as a `GS v 0` raster strip. */
+function buildRuleBar(): string {
+  // cpl=32 chars × 12 dots/char = 384 dots wide → 48 bytes/row.
+  const bytesPerRow = 48
+  const height = 4 // dots tall — a clearly visible line
+  const data = '\\xff'.repeat(bytesPerRow * height)
+  // GS v 0 m xL xH yL yH d1...dk
+  return (
+    '\\x1dv0\\x00' + // GS v 0, m=0 (normal)
+    '\\x30\\x00' + // xL=48, xH=0 (width in bytes)
+    '\\x04\\x00' + // yL=4, yH=0 (height in dots)
+    data +
+    '\\n'
+  )
+}
+
+/**
+ * ReceiptLine's built-in horizontal rule (a bare `-` line) fills the row with
+ * byte 0x95, which the RPP02N's default code page renders as `ò` rather than a
+ * line. Rewrite bare-dash lines into a raw `{x:...}` ESC/POS command that emits
+ * a full-width `GS v 0` raster bar — a true solid line on any thermal printer,
+ * independent of the printer's font/code page. The `command` property passes raw
+ * bytes, so this needs no PNG decoding and works in the browser path too.
+ */
+export function solidRuleLines(doc: string): string {
+  return doc.replace(/^[\t ]*-+[\t ]*$/gm, `{x:${RULE_BAR}}`)
+}
+
 export const ESCPOS = {
   /**
    * ESC/POS printers commonly expose their write characteristic under this service.
@@ -76,11 +113,25 @@ export class Device {
     let data: string
 
     if (receiptline) {
-      data = receiptline.transform(doc, {
+      // The cut is emitted manually below so we can advance (feed) the paper
+      // below the last line — including a trailing QR raster — before cutting.
+      // ReceiptLine's built-in cut sits at the very end of the output with no
+      // feed after a trailing raster, so a doc ending in a QR got cut through
+      // the code. `cutting: false` here keeps the cut out of `data`.
+      data = receiptline.transform(solidRuleLines(doc), {
         cpl: 32,
         encoding: 'multilingual',
-        command: 'escpos',
-        cutting,
+        // 'generic' emits the universal GS v 0 raster + plain ESC/POS (no Seiko
+        // `FS ( A` prelude, no `GS 8 L`), which the RPP02N actually honors. The
+        // RPP02N ignores the Seiko-only 'escpos' (_thermal) sequences, which leaked
+        // stray bytes ('A0'), printed the QR header as text ('0p01...'), and garbled
+        // the stream. 'generic' still supports fonts/sizes/emphasis for text lines.
+        command: 'generic',
+        // default spacing:false emits `ESC 3 0` (0-dot line spacing), so printed
+        // lines touch with no vertical gap. spacing:true emits `ESC 2` (1/6-inch),
+        // restoring readable gaps between rows.
+        spacing: true,
+        cutting: false,
       })
     } else {
       // receiptline is a hard requirement — there is no plain-text fallback. A
@@ -93,15 +144,23 @@ export class Device {
     }
 
     // Convert receiptline's binary-string output (one char = one byte, 0–255)
-    // into a Uint8Array, preserving raw bytes >127. Grow by 3 to prepend the feed
-    // without overwriting the document's first bytes (init command / header).
-    const buffer = new Uint8Array(data.length + 3)
+    // into a Uint8Array, preserving raw bytes >127.
+    const bytes = new Uint8Array(data.length)
     for (let i = 0; i < data.length; i++) {
-      buffer[i + 3] = data.charCodeAt(i) & 0xff
+      bytes[i] = data.charCodeAt(i) & 0xff
     }
 
-    // Prepend `ESC d feed` — advance the paper below the content before the cut.
-    buffer.set(Uint8Array.from([0x1b, 0x64, feed & 0xff]), 0)
+    // `ESC d feed` — advance the paper below the content (so any trailing raster
+    // clears the print head) before the cut. `GS V B 00` is the full cut that
+    // ReceiptLine's 'generic' command set emits.
+    const feedSeq = Uint8Array.from([0x1b, 0x64, feed & 0xff])
+    const cutSeq = Uint8Array.from([0x1d, 0x56, 0x42, 0x00])
+    const tailLen = feedSeq.length + (cutting ? cutSeq.length : 0)
+
+    const buffer = new Uint8Array(data.length + tailLen)
+    buffer.set(bytes, 0)
+    buffer.set(feedSeq, data.length)
+    if (cutting) buffer.set(cutSeq, data.length + feedSeq.length)
 
     return buffer
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { Device, DeviceFinder, ESCPOS } from '../src/printer.ts'
+import { Device, DeviceFinder, ESCPOS, solidRuleLines } from '../src/printer.ts'
 
 // Mock webbluetooth: getBluetooth lazy-imports it only in the Node path.
 const m = vi.hoisted(() => ({
@@ -25,19 +25,45 @@ beforeEach(() => {
   m.requestDevice.mockReset()
 })
 
-describe('Device.encode', () => {
-  it('produces ESC/POS bytes with a prepended feed', async () => {
-    const bt = { id: 'dev-1', name: 'RPP02N', gatt: {} } as unknown as BluetoothDevice
-    const device = new Device(bt)
-    const bytes = await device.encode('Hi', false, 3)
-    // First 3 bytes = ESC d feed; followed by escaped text + cut.
-    expect(Array.from(bytes.slice(0, 3))).toEqual([0x1b, 0x64, 0x03])
-    // Contains TEXT and a paper-cut byte (0x1d GS ...).
-    const all = Array.from(bytes)
-    expect(all).toContain(0x1d)
+describe('solidRuleLines', () => {
+  it('rewrites bare-dash lines into a GS v 0 raster-bar command line', () => {
+    const out = solidRuleLines('head\n-\ntail')
+    expect(out).toMatch(/^head\n\{x:/)
+    const bar = out.match(/\{x:([^}]+)\}/)![1]
+    // GS v 0 m xL xH yL yH ... — a full-width raster strip (48 bytes/row × 4 rows)
+    expect(bar.startsWith('\\x1dv0\\x00\\x30\\x00\\x04\\x00')).toBe(true)
+    expect((bar.match(/\\xff/g) ?? [])).toHaveLength(48 * 4) // all-black data
+    expect(bar.endsWith('\\n')).toBe(true) // trailing newline → own printed row
   })
 
-  it('omits the cut when cutting is false', async () => {
+  it('rewrites any standalone dash line (multi/unpadded) once', () => {
+    const out = solidRuleLines('a\n--\n- \nb')
+    expect(out.match(/{x:/g)).toHaveLength(2)
+    expect(out).toMatch(/^a\n\{x:/)
+    expect(out).toMatch(/\}\nb$/)
+  })
+
+  it('leaves normal lines untouched', () => {
+    const out = solidRuleLines('- a bullet')
+    expect(out).not.toContain('{x:')
+    expect(out).toBe('- a bullet')
+  })
+})
+
+describe('Device.encode', () => {
+  it('feeds below the content before the cut', async () => {
+    const bt = { id: 'dev-1', name: 'RPP02N', gatt: {} } as unknown as BluetoothDevice
+    const device = new Device(bt)
+    const bytes = await device.encode('Hi', true, 3)
+    const all = Array.from(bytes)
+    // Tail must be: ESC d 03 (feed) + GS V B 00 (full cut) — feed comes BEFORE
+    // the cut so a trailing raster clears the head before cutting.
+    expect(all.slice(-7)).toEqual([0x1b, 0x64, 0x03, 0x1d, 0x56, 0x42, 0x00])
+    // The feed must not be at the very start (no blank lines at the top).
+    expect(all.slice(0, 3)).not.toEqual([0x1b, 0x64, 0x03])
+  })
+
+  it('omits the cut when cutting is false but still feeds', async () => {
     const bt = { id: 'dev-1', name: 'RPP02N', gatt: {} } as unknown as BluetoothDevice
     const device = new Device(bt)
     const bytes = await device.encode('Hi', false, 1)
@@ -45,6 +71,8 @@ describe('Device.encode', () => {
     // The paper-cut sequence is GS V (0x1d 0x56) — should be absent when cutting.
     const hasCut = all.some((v, i) => v === 0x1d && all[i + 1] === 0x56)
     expect(hasCut).toBe(false)
+    // ...but the trailing feed is still present.
+    expect(all.slice(-3)).toEqual([0x1b, 0x64, 0x01])
   })
 })
 
