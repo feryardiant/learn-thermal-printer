@@ -2,6 +2,7 @@
 // (erased at runtime) so this module stays browser-safe; the value is loaded
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
+import receiptline from 'receiptline'
 
 export const ESCPOS = {
   /**
@@ -15,95 +16,107 @@ export const ESCPOS = {
   WRITE_CHAR_UUID: '0000ff02-0000-1000-8000-00805f9b34fb',
 } as const
 
-const ESC = 0x1b
-const GS = 0x1d
+export class Device {
+  private device: BluetoothDevice
 
-export class Command {
-  private cmds: Uint8Array[] = []
+  constructor(device: BluetoothDevice) {
+    this.device = device
+  }
 
-  constructor(text: string, feed: number, noCut: boolean, mode: 'full' | 'partial') {
-    // Initialize with the default ESC/POS initialization command
-    this.append([ESC, 0x40])
+  get id(): string {
+    return this.device.id
+  }
 
-    // Encode text as UTF-8 bytes.
-    this.append(this.encodeEscapes(text))
-
-    // `ESC d n` — feed `n` lines.
-    this.append([ESC, 0x64, feed & 0xff])
-
-    if (!noCut) {
-      // `GS V m` — cut paper.
-      // - `full`   → `GS V 65` (0x41)
-      // - `partial`→ `GS V 66` (0x42)
-      this.append([GS, 0x56, mode === 'full' ? 0x41 : 0x42])
-    }
+  get name(): string {
+    return this.device.name || 'Unknown device'
   }
 
   /**
-   * Build byte arrays into a single buffer and send it to the device.
+   * Send a raw ESC/POS byte buffer to a device over its GATT write
+   * characteristic.
+   *
+   * This printer loses ACKs on `writeValueWithResponse` (it prints the bytes but
+   * the ACK is lost), which made retries resend the whole buffer and duplicate the
+   * header. So we use `writeValueWithoutResponse` (fire-and-forget) to stream the
+   * chunks after the link settles — the printer accepts and prints them reliably
+   * without false failures.
    */
-  async sendTo(device: BluetoothDevice): Promise<void> {
-    const total = this.cmds.reduce((n, p) => n + p.length, 0)
-    const data = new Uint8Array(total)
-    let offset = 0
+  async send(doc: string, cutting: boolean = true, feed = 3) {
+    const server = await this.connect()
 
-    for (const cmd of this.cmds) {
-      data.set(cmd, offset)
-      offset += cmd.length
-    }
+    const char = await this.getCharacteristic(server)
+    const bytes = await this.encode(doc, cutting, feed)
 
-    if (!device.gatt) {
-      throw new Error('Device has no GATT server.')
-    }
+    // Let the BLE link settle before streaming writes.
+    await new Promise((r) => setTimeout(r, 500))
 
-    const server = await device.gatt.connect()
-
-    try {
-      const service = await server.getPrimaryService(ESCPOS.SERVICE_UUID)
-
-      if (!service) {
-        throw new Error(`Device does not expose ESC/POS service ${ESCPOS.SERVICE_UUID}`)
-      }
-
-      const char = await service.getCharacteristic(ESCPOS.WRITE_CHAR_UUID)
-
-      if (!char) {
-        throw new Error(`Device does not expose write characteristic ${ESCPOS.WRITE_CHAR_UUID}`)
-      }
-
-      // Use write-with-response so the write is acknowledged before we
-      // disconnect. writeValueWithoutResponse is fire-and-forget: disconnecting
-      // immediately after can drop the bytes before they reach the printer.
-      await char.writeValueWithResponse(data.buffer as ArrayBuffer)
-    } finally {
-      try {
-        server.disconnect()
-      } catch {
-        // ignore disconnect errors
+    // BLE ATT limits each write to (MTU - 3) bytes. Chunk larger payloads and
+    // pace them so the printer can process each chunk.
+    const CHUNK = 240 // MTU 240 minus the 3-byte ATT header
+    for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length))
+      await char.writeValueWithResponse(chunk.buffer)
+      if (offset + CHUNK < bytes.length) {
+        // Small inter-chunk delay so the printer isn't overwhelmed.
+        await new Promise((r) => setTimeout(r, 20))
       }
     }
+
+    // Give the printer a moment to finish processing before disconnecting.
+    await new Promise((r) => setTimeout(r, 500))
+
+    server.disconnect()
   }
 
-  /**
-    * Encode common escape sequences (`\n`, `\r`, `\t`)  as UTF-8 bytes.
-    */
-  private encodeEscapes(text: string): Uint8Array {
-    text = text
-      .replace(/\\n/g, '\n')
-      .replace(/\\r/g, '\r')
-      .replace(/\\t/g, '\t')
+  async encode(doc: string, cutting: boolean = true, feed = 1): Promise<Uint8Array<ArrayBuffer>> {
+    // ReceiptLine transforms the document into ESC/POS bytes. `cutting` controls
+    // the paper cut; a feed is prepended so the paper advances before the cut.
+    const data = receiptline.transform(doc, {
+      cpl: 32,
+      encoding: 'multilingual',
+      command: 'escpos',
+      cutting,
+    })
 
-    return new TextEncoder().encode(text)
-  }
-
-  private append(cmd: Uint8Array | number[]): this {
-    if (cmd instanceof Uint8Array) {
-      this.cmds.push(cmd)
-    } else {
-      this.cmds.push(Uint8Array.from(cmd))
+    /**
+     * Convert receiptline's binary-string output (one char = one byte, 0–255)
+     * into a Uint8Array, preserving raw bytes >127.
+     */
+    const buffer = new Uint8Array(data.length)
+    for (let i = 0; i < data.length; i++) {
+      buffer[i] = data.charCodeAt(i) & 0xff
     }
 
-    return this
+    // Prepend `ESC d feed` — advance the paper below the content before the cut.
+    buffer.set(Uint8Array.from([0x1b, 0x64, feed & 0xff]), 0)
+
+    return buffer
+  }
+
+  async connect() {
+    if (!this.device.gatt) {
+      throw new FinderError(this.name, 'Device has no GATT server.')
+    }
+
+    const server = await this.device.gatt.connect()
+
+    return server
+  }
+
+  async getCharacteristic(server: BluetoothRemoteGATTServer): Promise<BluetoothRemoteGATTCharacteristic> {
+    const service = await server.getPrimaryService(ESCPOS.SERVICE_UUID)
+
+    if (!service) {
+      throw new Error(`Device does not expose ESC/POS service ${ESCPOS.SERVICE_UUID}`)
+    }
+
+    const char = await service.getCharacteristic(ESCPOS.WRITE_CHAR_UUID)
+
+    if (!char) {
+      throw new Error(`Device does not expose write characteristic ${ESCPOS.WRITE_CHAR_UUID}`)
+    }
+
+    return char
   }
 }
 

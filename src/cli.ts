@@ -1,12 +1,16 @@
-import { DeviceFinder, Command } from './printer.ts'
+import { DeviceFinder, FinderError } from './printer.ts'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 
 export function printUsage(): void {
   console.log(`Usage:
   node src/cli.ts list [--all]        List available ESC/POS printers
   node src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]
-                                     Print text to a printer
+                                     Print text or a receiptline file to a printer
 
-<printer> is matched by name (e.g. "RPP02N") or a BLE device id.`)
+<printer> is matched by name (e.g. "RPP02N") or a BLE device id.
+<text>   is either a ReceiptLine document or a full path to a ReceiptLine (.md) file.
+         If the path exists, the file is parsed and printed; otherwise the text is
+         parsed directly as a ReceiptLine document.`)
 }
 
 export async function listCommand(showAll: boolean): Promise<void> {
@@ -28,24 +32,20 @@ export async function listCommand(showAll: boolean): Promise<void> {
   for (const p of printers) console.log(`  ${(p.name ?? '').padEnd(24)} ${p.id}`)
 }
 
-/** Resolve a user-supplied printer identifier to a BLE device. */
-export function resolvePrinter(arg: string, printers: BluetoothDevice[]): BluetoothDevice | null {
-  const lower = arg.toLowerCase()
-
-  // Exact id match.
-  const byId = printers.find((p) => p.id === arg)
-  if (byId) return byId
-
-  // Name match (case-insensitive substring). Collect all matches.
-  const matches = printers.filter((p) => (p.name ?? '').toLowerCase().includes(lower))
-  if (matches.length === 1) return matches[0]
-  if (matches.length > 1) {
-    console.error(`"${arg}" matches multiple printers:`)
-    for (const m of matches) console.error(`  ${m.name}  ${m.id}`)
-    return null
+/**
+ * Return the ReceiptLine document for the `<text>` argument.
+ * If the argument is a real file path, read and return the file contents;
+ * otherwise treat the argument itself as the document / plain text.
+ */
+export function loadReceiptlineDoc(arg: string): string {
+  try {
+    if (existsSync(arg) && statSync(arg).isFile()) {
+      return readFileSync(arg, 'utf8')
+    }
+  } catch {
+    // not a readable file — fall through to raw text
   }
-
-  return null
+  return arg
 }
 
 export async function printCommand(args: string[]): Promise<number> {
@@ -54,7 +54,7 @@ export async function printCommand(args: string[]): Promise<number> {
     return 1
   }
 
-  const printerArg = args[0]
+  const printerId = args[0]
   const text = args[1]
 
   let feed = 1
@@ -78,28 +78,25 @@ export async function printCommand(args: string[]): Promise<number> {
   }
 
   const finder = new DeviceFinder()
-  const printers = await finder.getList()
-  const printer = resolvePrinter(printerArg, printers)
-  if (!printer) {
-    console.error(`No printer found matching "${printerArg}".`)
-    console.error('Run `node src/cli.ts list` to see available printers.')
-    console.error('')
-    console.error('If the printer is paired but not listed, it may be in SPP (classic) mode,')
-    console.error('not advertising BLE. Enable BLE mode on the printer (e.g. connect to it once')
-    console.error('with a Bluetooth printer app) so it advertises its BLE service, then retry.')
-    return 1
-  }
+  const doc = loadReceiptlineDoc(text)
 
   try {
-    const device = await finder.getDevice(printer.id, printer.name ?? 'Unknown device')
-    await new Command(text, feed, noCut, 'full').sendTo(device)
+    const device = await finder.getDevice(printerId)
+
+    await device.send(doc, !noCut, feed)
+
+    console.log(`Printed to ${device.name} (${device.id}).`)
+
+    return 0
   } catch (err) {
-    console.error(`Failed to print to ${printer.name}: ${(err as Error).message}`)
+    if (err instanceof FinderError) {
+      console.error(err.message, 'id:', err.id, err)
+    } else {
+      console.error((err as Error).message)
+    }
+
     return 1
   }
-
-  console.log(`Printed to ${printer.name} (${printer.id}).`)
-  return 0
 }
 
 export async function main(): Promise<number> {
@@ -110,20 +107,25 @@ export async function main(): Promise<number> {
   const cmd = argv[i] ?? ''
   const args = argv.slice(i + 1)
 
-  switch (cmd) {
-    case 'list':
-      await listCommand(args.includes('--all'))
-      return 0
-    case 'print':
-      return await printCommand(args)
-    case 'help':
-    case '--help':
-    case '-h':
-      printUsage()
-      return 0
-    default:
-      printUsage()
-      return 1
+  try {
+    switch (cmd) {
+      case 'list':
+        await listCommand(args.includes('--all'))
+        process.exit(0)
+      case 'print':
+        process.exit(await printCommand(args))
+      case 'help':
+      case '--help':
+      case '-h':
+        printUsage()
+        process.exit(0)
+      default:
+        printUsage()
+        process.exit(1)
+    }
+  } catch (err) {
+    console.error(err)
+    process.exit(1)
   }
 }
 
@@ -131,10 +133,6 @@ export async function main(): Promise<number> {
 if (import.meta.main) {
   // bun segfaults on the webbluetooth native binding (bun#18546 class of bug).
   // The CLI must be run with Node: `node src/cli.ts ...`.
-  if (typeof Bun !== 'undefined') {
-    console.error('The CLI must be run with Node (bun crashes on the webbluetooth native binding).')
-    console.error('Usage: node src/cli.ts <command>')
-    process.exit(1)
-  }
-  process.exit(await main())
+
+  main()
 }
