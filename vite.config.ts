@@ -1,3 +1,5 @@
+/// <reference types="vitest/config" />
+
 import { defineConfig, Plugin } from 'vite'
 import { readFileSync, copyFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -16,7 +18,7 @@ const require = createRequire(import.meta.url)
 function receiptlineGlobal(): Plugin {
   // Path of the vendored receiptline browser build inside node_modules.
   // It isn't exported via package.json "exports"/"files", but is always present
-  // after `npm install`. We serve it as `/receiptline.js` in dev and emit it to
+  // after `bun install`. We serve it as `/receiptline.js` in dev and emit it to
   // dist/ on build — no manual copy into public/ required.
   const RECEIPTLINE_NODE_MODULE = require.resolve('receiptline/lib/receiptline.js')
 
@@ -49,5 +51,13 @@ export default defineConfig({
     rollupOptions: {
       external: ['receiptline'],
     },
+  },
+  test: {
+    // Default environment for pure-logic tests.
+    environment: 'node',
+    // main.test.ts opts into happy-dom via a per-file comment.
+    include: ['test/**/*.test.ts'],
+    // Don't process CSS imports (main.ts imports style.css).
+    css: false,
   },
 })
