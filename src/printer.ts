@@ -109,10 +109,10 @@ export class Command {
 
 export class DeviceFinder {
   /**
-    * Substrings (case-insensitive) that indicate a BLE device is an ESC/POS
-    * receipt printer. Matched against the device name.
-    */
-  static PATTERNS = [
+   * Substrings (case-insensitive) that indicate a BLE device is an ESC/POS
+   * receipt printer. Matched against the device name.
+   */
+  readonly PATTERNS = [
     'rpp', 'pos', 'printer', 'thermal', 'receipt', 'escpos', 'esc-pos',
     'tm-', 'sp-', 'epson', 'star', 'bixolon', 'citizen', 'xprinter',
     'apos', 'samsung', 'sii', 'custom', 'rp-',
@@ -123,21 +123,25 @@ export class DeviceFinder {
    * `navigator.bluetooth`) as opposed to Node (where we use `webbluetooth`).
    * Guarded against `navigator` being undefined in Node.
    */
-  static IN_BROWSER = typeof navigator !== 'undefined' && 'bluetooth' in navigator
+  readonly IN_BROWSER = typeof navigator !== 'undefined' && 'bluetooth' in navigator
 
   async getList(): Promise<BluetoothDevice[]> {
     const found: BluetoothDevice[] = []
     const bt = await this.getBluetooth((device) => {
-      if (this.isValid(device.name || '')) {
-        found.push(device)
-        return true // auto-select to stop scanning this device
+      if (!this.isValid(device.name)) {
+        return false
       }
 
-      return false
+      found.push(device)
+
+      return true
     })
 
     try {
-      await bt.requestDevice({ acceptAllDevices: true })
+      await bt.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [ESCPOS.SERVICE_UUID]
+      })
     } catch {
       // scan completed or timed out; `found` already populated
     }
@@ -145,40 +149,62 @@ export class DeviceFinder {
     return found
   }
 
-  async getDevice(id: string, name: string): Promise<BluetoothDevice> {
-    const bt = await this.getBluetooth((device) => device.id === id)
-    const opt: RequestDeviceOptions = { acceptAllDevices: true }
+  async find(opt: { id?: string, name?: string }): Promise<BluetoothDevice | undefined> {
+    const devices = await this.getList()
 
-    if (DeviceFinder.IN_BROWSER) {
-      opt.optionalServices = [ESCPOS.SERVICE_UUID]
+    if (!opt.id && !opt.name) {
+      throw new Error('`DeviceFinder.find` requires either `id` or `name` to be specified')
     }
 
-    const device = await bt.requestDevice(opt)
+    if (opt.id) {
+      return devices.find((p) => p.id === opt.id)
+    }
+
+    const matches = devices.filter((p) => p.name.toLowerCase().includes(opt.name.toLowerCase()))
+
+    if (matches.length === 1) {
+      return matches[0]
+    }
+
+    const msgs = [`Multiple printers found with name "${opt.name}":`]
+
+    for (const m of matches) msgs.push(` - ${m.name}: ${m.id}`)
+
+    throw new Error(msgs.join('\n'))
+  }
+
+  async getDevice(name: string): Promise<Device> {
+    const device = await this.find({ name })
 
     if (!device) {
-      throw new Error(`BLE printer "${name}" not found`)
+      throw new FinderError(name, `Could not find device with ID "${name}"`)
     }
 
-    if (!device.gatt) {
-      throw new Error('Device has no GATT server.')
-    }
-
-    return device
+    return new Device(device)
   }
 
   private isValid(name: string): boolean {
     const n = name.toLowerCase()
 
-    return DeviceFinder.PATTERNS.some((p) => n.includes(p))
+    return this.PATTERNS.some((p) => n.includes(p))
   }
 
   private async getBluetooth(deviceFound: BluetoothOptions['deviceFound'], scanTime = 8) {
-    if (DeviceFinder.IN_BROWSER) {
+    if (this.IN_BROWSER) {
       return navigator.bluetooth
     }
 
     // Node only — load the native webbluetooth binding lazily.
     const { Bluetooth } = await import('webbluetooth')
-    return new Bluetooth({ deviceFound, scanTime })
+    return new Bluetooth({ deviceFound, scanTime, allowAllDevices: true })
+  }
+}
+
+export class FinderError extends Error {
+  readonly id: string
+
+  constructor(id: string, message: string) {
+    super(message)
+    this.id = id
   }
 }
