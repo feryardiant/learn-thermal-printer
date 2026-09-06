@@ -3,8 +3,8 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 
 export function printUsage(): void {
   console.log(`Usage:
-  node src/cli.ts list [--all]        List available ESC/POS printers
-  node src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]
+  bun src/cli.ts list [--all]        List available ESC/POS printers
+  bun src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]
                                      Print text or a receiptline file to a printer
 
 <printer> is matched by name (e.g. "RPP02N") or a BLE device id.
@@ -50,7 +50,7 @@ export function loadReceiptlineDoc(arg: string): string {
 
 export async function printCommand(args: string[]): Promise<number> {
   if (args.length < 2) {
-    console.error('Usage: node src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]')
+    console.error(`Usage: bun src/cli.ts print <printer> "<text>" [--no-cut] [--feed N]`)
     return 1
   }
 
@@ -131,8 +131,5 @@ export async function main(): Promise<number> {
 
 // Only run the CLI when executed directly (not when imported by tests).
 if (import.meta.main) {
-  // bun segfaults on the webbluetooth native binding (bun#18546 class of bug).
-  // The CLI must be run with Node: `node src/cli.ts ...`.
-
   main()
 }
