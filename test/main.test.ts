@@ -4,16 +4,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // main.ts (in src/) imports './style.css'; replace it with an empty module.
 vi.mock('../src/style.css', () => ({}))
 
-// Shared mocks for the Web Bluetooth API.
-const bt = vi.hoisted(() => ({
-  requestDevice: vi.fn(),
-  getDevices: vi.fn(),
-  getAvailability: vi.fn(),
-  connect: vi.fn(),
-  getPrimaryService: vi.fn(),
-  getCharacteristic: vi.fn(),
-  writeValueWithResponse: vi.fn(),
-  disconnect: vi.fn(),
+// main.ts uses DeviceFinder / Device from printer.ts.
+const printer = vi.hoisted(() => ({
+  getList: vi.fn(),
+  find: vi.fn(),
+  send: vi.fn(),
+}))
+
+vi.mock('../src/printer.ts', () => ({
+  DeviceFinder: class {
+    getList = printer.getList
+    find = printer.find
+  },
+  Device: class {
+    private bt: { id: string; name?: string }
+    constructor(bt: { id: string; name?: string }) {
+      this.bt = bt
+    }
+    get id() {
+      return this.bt.id
+    }
+    get name() {
+      return this.bt.name ?? 'Unknown device'
+    }
+    send = printer.send
+  },
 }))
 
 const HTML = `
@@ -26,38 +41,22 @@ const HTML = `
   <pre id="log"></pre>
 `
 
-const DEVICE = { id: 'dev-1', name: 'RPP02N', gatt: { connect: bt.connect } }
+const BT_DEVICE = { id: 'dev-1', name: 'RPP02N' }
 
 function setupDom(): void {
   document.body.innerHTML = HTML
 }
 
-function setupBluetooth(overrides: Record<string, unknown> = {}): void {
-  const bluetooth = {
-    getAvailability: bt.getAvailability,
-    requestDevice: bt.requestDevice,
-    getDevices: bt.getDevices,
-    ...overrides,
-  }
-  Object.defineProperty(navigator, 'bluetooth', { value: bluetooth, configurable: true })
+function setupBluetooth(): void {
+  Object.defineProperty(navigator, 'bluetooth', {
+    value: { requestDevice: vi.fn(), getDevices: vi.fn(), getAvailability: vi.fn() },
+    configurable: true,
+  })
 }
 
 function removeBluetooth(): void {
   Object.defineProperty(navigator, 'bluetooth', { value: undefined, configurable: true })
-  // Actually delete the property so `'bluetooth' in navigator` is false.
-  // @ts-expect-error
-  delete (navigator as Record<string, unknown>).bluetooth
-}
-
-function setupGattSuccess(): void {
-  const char = { writeValueWithResponse: bt.writeValueWithResponse }
-  const service = { getCharacteristic: bt.getCharacteristic }
-  const server = { getPrimaryService: bt.getPrimaryService, disconnect: bt.disconnect }
-  bt.connect.mockResolvedValue(server)
-  bt.getPrimaryService.mockResolvedValue(service)
-  bt.getCharacteristic.mockResolvedValue(char)
-  bt.writeValueWithResponse.mockResolvedValue(undefined)
-  bt.disconnect.mockResolvedValue(undefined)
+  delete (navigator as unknown as Record<string, unknown>).bluetooth
 }
 
 async function loadMain(): Promise<void> {
@@ -92,14 +91,9 @@ function textarea(id: string): HTMLTextAreaElement {
 beforeEach(() => {
   setupDom()
   localStorage.clear()
-  bt.requestDevice.mockReset()
-  bt.getDevices.mockReset()
-  bt.getAvailability.mockReset()
-  bt.connect.mockReset()
-  bt.getPrimaryService.mockReset()
-  bt.getCharacteristic.mockReset()
-  bt.writeValueWithResponse.mockReset()
-  bt.disconnect.mockReset()
+  printer.getList.mockReset()
+  printer.find.mockReset()
+  printer.send.mockReset()
 })
 
 describe('page load', () => {
@@ -124,22 +118,10 @@ describe('page load', () => {
     expect(btn('#check-btn').hasAttribute('disabled')).toBe(true)
   })
 
-  it('shows remembered state when getDevices is unsupported', async () => {
-    localStorage.setItem('thermal-print-device', JSON.stringify({ id: 'dev-1', name: 'RPP02N' }))
-    setupBluetooth({ getDevices: undefined })
-    await loadMain()
-    dispatchReady()
-    await flush()
-
-    expect(status()).toContain('RPP02N')
-    expect(status()).toContain('click Check to connect')
-    expect(btn('#print-btn').hasAttribute('disabled')).toBe(true)
-  })
-
-  it('auto-reconnects when getDevices returns the saved device', async () => {
+  it('auto-reconnects when find returns the saved device', async () => {
     localStorage.setItem('thermal-print-device', JSON.stringify({ id: 'dev-1', name: 'RPP02N' }))
     setupBluetooth()
-    bt.getDevices.mockResolvedValue([DEVICE])
+    printer.find.mockResolvedValue(BT_DEVICE)
     await loadMain()
     dispatchReady()
     await flush()
@@ -151,9 +133,9 @@ describe('page load', () => {
 })
 
 describe('check printer', () => {
-  it('selects a device via the chooser and saves it', async () => {
+  it('scans and selects a device, then saves it', async () => {
     setupBluetooth()
-    bt.requestDevice.mockResolvedValue(DEVICE)
+    printer.getList.mockResolvedValue([BT_DEVICE])
     await loadMain()
 
     btn('#check-btn').click()
@@ -164,40 +146,26 @@ describe('check printer', () => {
     expect(localStorage.getItem('thermal-print-device')).toContain('dev-1')
   })
 
-  it('reconnects to a saved device without the chooser', async () => {
-    localStorage.setItem('thermal-print-device', JSON.stringify({ id: 'dev-1', name: 'RPP02N' }))
-    setupBluetooth()
-    bt.getDevices.mockResolvedValue([DEVICE])
-    await loadMain()
-
-    btn('#check-btn').click()
-    await flush()
-
-    expect(status()).toBe('RPP02N')
-    expect(bt.requestDevice).not.toHaveBeenCalled()
-    expect(logText()).toContain('Reconnected')
-  })
-
-  it('falls back to the chooser when the saved device is gone', async () => {
+  it('falls back to scanning when the saved device is gone', async () => {
     localStorage.setItem('thermal-print-device', JSON.stringify({ id: 'gone', name: 'Old' }))
     setupBluetooth()
-    bt.getDevices.mockResolvedValue([DEVICE])
-    bt.requestDevice.mockResolvedValue(DEVICE)
+    printer.find.mockResolvedValue(undefined)
+    printer.getList.mockResolvedValue([BT_DEVICE])
     await loadMain()
 
     btn('#check-btn').click()
     await flush()
 
-    expect(bt.requestDevice).toHaveBeenCalledOnce()
+    expect(printer.getList).toHaveBeenCalledOnce()
     expect(status()).toBe('RPP02N')
   })
 })
 
 describe('print', () => {
-  it('writes ESC/POS bytes and logs success', async () => {
+  it('calls Device.send and logs success', async () => {
     setupBluetooth()
-    setupGattSuccess()
-    bt.requestDevice.mockResolvedValue(DEVICE)
+    printer.getList.mockResolvedValue([BT_DEVICE])
+    printer.send.mockResolvedValue(undefined)
     await loadMain()
 
     btn('#check-btn').click()
@@ -207,12 +175,8 @@ describe('print', () => {
     btn('#print-btn').click()
     await flush()
 
-    expect(bt.writeValueWithResponse).toHaveBeenCalledOnce()
-    const arg = bt.writeValueWithResponse.mock.calls[0][0]
-    // ESC @ + "Hi" + feed 3 + cut
-    expect(Array.from(new Uint8Array(arg))).toEqual([
-      0x1b, 0x40, 0x48, 0x69, 0x1b, 0x64, 0x03, 0x1d, 0x56, 0x41,
-    ])
+    expect(printer.send).toHaveBeenCalledOnce()
+    expect(printer.send).toHaveBeenCalledWith('Hi', true, 3)
     expect(logText()).toContain('Printed 2 chars')
   })
 
@@ -221,14 +185,14 @@ describe('print', () => {
     await loadMain()
     btn('#print-btn').click()
     await flush()
-    expect(bt.writeValueWithResponse).not.toHaveBeenCalled()
+    expect(printer.send).not.toHaveBeenCalled()
   })
 })
 
 describe('forget', () => {
   it('clears the saved device and resets state', async () => {
     setupBluetooth()
-    bt.requestDevice.mockResolvedValue(DEVICE)
+    printer.getList.mockResolvedValue([BT_DEVICE])
     await loadMain()
 
     btn('#check-btn').click()

@@ -1,5 +1,5 @@
 import './style.css'
-import { DeviceFinder, Command } from './printer.ts'
+import { DeviceFinder, Device } from './printer.ts'
 
 const $checkBtn = document.querySelector<HTMLButtonElement>('#check-btn')!
 const $printBtn = document.querySelector<HTMLButtonElement>('#print-btn')!
@@ -9,7 +9,7 @@ const $textInput = document.querySelector<HTMLTextAreaElement>('#text-input')!
 const $noCut = document.querySelector<HTMLInputElement>('#no-cut')!
 const $log = document.querySelector<HTMLPreElement>('#log')!
 
-let device: BluetoothDevice | undefined
+let device: Device | undefined
 
 /** localStorage key for the last-selected printer. */
 const STORAGE_KEY = 'thermal-print-device'
@@ -45,6 +45,7 @@ function clearSavedDevice(): void {
 }
 
 function log(msg: string): void {
+  console.info(msg)
   $log.textContent = `${new Date().toLocaleTimeString()} ${msg}\n${$log.textContent ?? ''}`
 }
 
@@ -62,10 +63,10 @@ function logSPPWorkaround(): void {
   log('printer app to switch it to BLE mode, then retry.')
 }
 
-function setDevice(d: BluetoothDevice | undefined): void {
+function setDevice(d: Device | undefined): void {
   device = d
   if (d) {
-    $deviceStatus.textContent = d.name ?? 'Unknown device'
+    $deviceStatus.textContent = d.name
     $printBtn.disabled = false
     $forgetBtn.disabled = false
   } else {
@@ -84,22 +85,16 @@ function showRemembered(name: string): void {
 
 /**
  * Reconnect to a previously-authorized device by id, without the chooser.
- * Returns the device if found, otherwise null.
+ * Returns a Device if found, otherwise null.
  */
-async function reconnectById(id: string): Promise<BluetoothDevice | null> {
-  // Some Chrome builds don't expose getDevices(); in that case we can't
-  // re-acquire a device without the chooser.
-  if (typeof navigator.bluetooth.getDevices !== 'function') {
-    throw new Error('getDevices() is not supported in this browser')
-  }
-  const devices = await navigator.bluetooth.getDevices()
-  return devices.find((d) => d.id === id) ?? null
+async function reconnectById(id: string): Promise<Device | null> {
+  const finder = new DeviceFinder()
+  const found = await finder.find({ id })
+  return found ? new Device(found) : null
 }
 
 /**
  * Try to auto-reconnect to the saved printer on page load.
- * `getDevices()` + `gatt.connect()` may require a user gesture in some
- * browsers; if so, we fall back to showing the remembered state.
  */
 async function autoReconnect(): Promise<void> {
   const saved = loadSavedDevice()
@@ -129,33 +124,23 @@ $checkBtn.addEventListener('click', async () => {
     return
   }
 
-  // If we remember a printer, try to reconnect to it without the chooser.
-  const saved = loadSavedDevice()
-  if (saved) {
-    try {
-      const match = await reconnectById(saved.id)
-      if (match) {
-        setDevice(match)
-        log(`Reconnected to ${match.name}.`)
-        return
-      }
-      log(`Remembered printer "${saved.name}" not found; opening chooser.`)
-    } catch (err) {
-      log(`Reconnect failed: ${(err as Error).message}`)
-    }
-  }
-
   try {
-    // Must be called synchronously within the click handler (user gesture).
-    // In the browser this shows the device chooser.
-    const picked = await finder.getDevice('', '')
+    // Open the device chooser once and select the picked printer.
+    // In the browser, `finder.getList()` calls navigator.bluetooth.requestDevice
+    // (the chooser) and returns the picked device.
+    const list = await finder.getList()
+    if (!list.length) {
+      log('No ESC/POS printer found.')
+      logSPPWorkaround()
+      return
+    }
+    const picked = new Device(list[0])
     setDevice(picked)
-    saveDevice({ id: picked.id, name: picked.name ?? 'Unknown device' })
+    saveDevice({ id: picked.id, name: picked.name })
     log(`Selected: ${picked.name}`)
   } catch (err) {
     setDevice(undefined)
     log(`Selection failed: ${(err as Error).message}`)
-    logSPPWorkaround()
   }
 })
 
@@ -175,8 +160,8 @@ $printBtn.addEventListener('click', async () => {
   }
 
   try {
-    // Write-with-response is used so the write is acknowledged before disconnect.
-    await new Command(text, 3, $noCut.checked, 'full').sendTo(device)
+    // The Device.send pipeline (receiptline + chunked writes) prints the text.
+    await device.send(text, !$noCut.checked, 3)
     log(`Printed ${text.length} chars to ${device.name}.`)
   } catch (err) {
     log(`Print failed: ${(err as Error).message}`)

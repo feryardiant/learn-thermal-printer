@@ -361,3 +361,48 @@ The multi-print (and earlier partial-print) bugs were **code bugs in the chunkin
 loop**, not printer firmware instability or write-method semantics. The printer
 itself was fine all along; our chunking was sending duplicate/wrong-sized writes.
 The earlier flakiness was largely this bug surfacing in different forms.
+
+## 15. Web browser + receiptline (Approach A) — resolved (2026-09-06)
+
+### Problem
+
+Loading `receiptline` in the browser crashed with `Cannot read properties of
+undefined (reading 'prototype')`, then `util.inherits is not a function`. Root
+cause: Vite tries to statically bundle receiptline's optional Node deps
+(`pngjs`, `iconv-lite`, `stream`, `zlib`), which don't exist in the browser.
+Polyfilling them one-by-one was a fragile rabbit hole and bloated the bundle
+(>500 kB).
+
+### Key realisation
+
+receiptline ships a **browser build** that exposes `window.receiptline`: the
+Node deps are loaded lazily behind `if (typeof require !== 'undefined')` and only
+used for images/barcodes/multibyte — **text transforms work fine in the browser**.
+
+### Approach A (adopted)
+
+- A small **Vite plugin** (`serve-receiptline` in `vite.config.ts`) serves the
+  receiptline browser build at **`/receiptline.js`** directly from
+  `node_modules/receiptline/lib/receiptline.js`
+  (`require.resolve`) — no copy into `public/`.
+  - **dev**: served from node_modules via a dev-server middleware.
+  - **build**: emitted into `dist/receiptline.js` via `generateBundle`.
+  - **preview**: served from `dist`.
+- `index.html` includes `<script src="/receiptline.js">` exposing
+  `window.receiptline`.
+- `Device.encode()` resolves receiptline via `window.receiptline` (browser) or a
+  lazy `import('receiptline')` (Node/CLI). Vite externalizes `receiptline` so it
+  doesn't try to bundle its Node deps.
+- Full ReceiptLine markup works in the browser (verified: `|^^Test^^|`
+  transforms to the full ESC/POS sequence).
+- `encodePlain()` was removed. receiptline is now a hard requirement — if it is
+  unavailable, `encode()` throws instead of silently printing raw markup.
+
+Note: `receiptline/package.json` has **no `files`/`exports`** field, so
+`lib/receiptline.js` is always present after install; we read it via
+`require.resolve`.
+
+### Dev server
+
+`@vitejs/plugin-basic-ssl` was removed — the app now runs over **HTTP**
+(`http://localhost:5173`), no HTTPS needed.

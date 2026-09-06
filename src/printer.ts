@@ -2,10 +2,6 @@
 // (erased at runtime) so this module stays browser-safe; the value is loaded
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
-// receiptline is Node-oriented (pulls in buffer/util/pngjs). It is imported
-// lazily inside encode() and used in Node (CLI). In the browser, where those
-// Node built-ins aren't polyfilled, we fall back to building ESC/POS bytes
-// directly.
 
 export const ESCPOS = {
   /**
@@ -73,21 +69,27 @@ export class Device {
   }
 
   async encode(doc: string, cutting: boolean = true, feed = 1): Promise<Uint8Array<ArrayBuffer>> {
+    // Resolve the receiptline API: in the browser it's a global script
+    // (window.receiptline, loaded via <script src="/receiptline.js">); in Node
+    // (CLI) it's an ESM import. Both expose { transform }.
+    const receiptline = await this.getReceiptline()
     let data: string
-    try {
-      // Prefer receiptline (full ReceiptLine document support). This works in
-      // Node (CLI). In the browser its Node-built-in deps aren't polyfilled, so
-      // the dynamic import throws and we fall back to a direct builder below.
-      const { default: receiptline } = await import('receiptline')
+
+    if (receiptline) {
       data = receiptline.transform(doc, {
         cpl: 32,
         encoding: 'multilingual',
         command: 'escpos',
         cutting,
       })
-    } catch {
-      // Browser fallback: build a minimal ESC/POS stream (init + text + feed [+ cut]).
-      return this.encodePlain(doc, cutting, feed)
+    } else {
+      // receiptline is a hard requirement — there is no plain-text fallback. A
+      // missing/modified receiptline would otherwise silently print raw markup, so
+      // we fail loudly instead.
+      throw new Error([
+        'receiptline is not available. In the browser ensure /receiptline.js is served;',
+        'in the CLI install the receiptline dependency.'
+      ].join(' '))
     }
 
     // Convert receiptline's binary-string output (one char = one byte, 0–255)
@@ -105,23 +107,29 @@ export class Device {
   }
 
   /**
-   * Browser-safe minimal ESC/POS builder for text docs (no receiptline needed).
-   * Emits: ESC @ (init) + text + ESC d n (feed) [+ GS V 66 (partial cut)].
+   * Resolve receiptline's `transform` API across environments:
+   * - Browser: global `window.receiptline` (loaded as a script tag).
+   * - Node (CLI): lazy ESM `await import('receiptline')`.
+   * Returns null if unavailable.
    */
-  private encodePlain(doc: string, cutting: boolean, feed: number): Uint8Array<ArrayBuffer> {
-    const body = new TextEncoder().encode(doc.replace(/\r/g, ''))
-    const cut = cutting ? [0x1d, 0x56, 0x42] : [] // GS V 66 (partial cut)
-    // layout: ESC @ (2) + body + ESC d n (3) [+ cut]
-    const out = new Uint8Array(2 + body.length + 3 + cut.length)
-    let o = 0
-    out.set([0x1b, 0x40], o); o += 2 // ESC @ init
-    out.set(body, o); o += body.length
-    out.set([0x1b, 0x64, feed & 0xff], o); o += 3 // ESC d n feed
-    out.set(cut, o) // optional cut
-    return out
+  private async getReceiptline(): Promise<{ transform: (doc: string, opts: object) => string } | null> {
+    // Browser global (window.receiptline).
+    const g = globalThis as { receiptline?: { transform?: unknown } }
+    if (g.receiptline && typeof g.receiptline.transform === 'function') {
+      return g.receiptline as { transform: (doc: string, opts: object) => string }
+    }
+
+    // Node: lazy import.
+    try {
+      const mod = await import('receiptline')
+      const rl = (mod.default ?? mod) as { transform: (doc: string, opts: object) => string }
+      return rl
+    } catch {
+      return null
+    }
   }
 
-  async connect() {
+  private async connect() {
     if (!this.device.gatt) {
       throw new FinderError(this.name, 'Device has no GATT server.')
     }
@@ -131,7 +139,7 @@ export class Device {
     return server
   }
 
-  async getCharacteristic(server: BluetoothRemoteGATTServer): Promise<BluetoothRemoteGATTCharacteristic> {
+  private async getCharacteristic(server: BluetoothRemoteGATTServer): Promise<BluetoothRemoteGATTCharacteristic> {
     const service = await server.getPrimaryService(ESCPOS.SERVICE_UUID)
 
     if (!service) {
@@ -208,8 +216,10 @@ export class DeviceFinder {
       return devices.find((p) => p.id === opt.id)
     }
 
-    const needle = (opt.name ?? '').toLowerCase()
-    const matches = devices.filter((p) => (p.name ?? '').toLowerCase().includes(needle))
+    const matches = devices.filter((p) => {
+      const toLower = (name?: string) => (name ?? '').toLowerCase()
+      return toLower(p.name).includes(toLower(opt.name))
+    })
 
     if (matches.length === 1) {
       return matches[0]

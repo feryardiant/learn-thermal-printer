@@ -5,6 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Termal Print</title>
+    <!-- receiptline browser build, served at /receiptline.js by a Vite plugin
+         (from node_modules in dev; emitted to dist on build). Exposes window.receiptline
+         for ESC/POS generation in the browser. -->
+    <script crossorigin src="/receiptline.js"></script>
   </head>
   <body>
     <div id="app">
