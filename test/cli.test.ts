@@ -78,7 +78,7 @@ describe('printCommand', () => {
     const dev = { id: 'id-rpp', name: 'RPP02N', send: m.send }
     m.getDevice.mockResolvedValue(dev)
     m.send.mockResolvedValue(undefined)
-    const code = await printCommand(['RPP02N', 'src/samples/06-test-card.md'])
+    const code = await printCommand(['RPP02N', 'public/samples/06-test-card.md'])
     expect(code).toBe(0)
     expect(m.send).toHaveBeenCalledOnce()
   })

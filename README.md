@@ -29,7 +29,7 @@ bun src/cli.ts print RPP02N "Hello" --no-cut --feed 5  # no cut, extra paper fee
 
 ## ReceiptLine markup
 
-See [`src/samples/README.md`](src/samples/README.md) for the full reference.
+See [`public/samples/README.md`](public/samples/README.md) for the full reference.
 
 ```
 |^^^Header^^^|
