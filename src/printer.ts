@@ -2,7 +2,10 @@
 // (erased at runtime) so this module stays browser-safe; the value is loaded
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
-import receiptline from 'receiptline'
+// receiptline is Node-oriented (pulls in buffer/util/pngjs). It is imported
+// lazily inside encode() and used in Node (CLI). In the browser, where those
+// Node built-ins aren't polyfilled, we fall back to building ESC/POS bytes
+// directly.
 
 export const ESCPOS = {
   /**
@@ -70,20 +73,26 @@ export class Device {
   }
 
   async encode(doc: string, cutting: boolean = true, feed = 1): Promise<Uint8Array<ArrayBuffer>> {
-    // ReceiptLine transforms the document into ESC/POS bytes. `cutting` controls
-    // the paper cut; a feed is prepended so the paper advances before the cut.
-    const data = receiptline.transform(doc, {
-      cpl: 32,
-      encoding: 'multilingual',
-      command: 'escpos',
-      cutting,
-    })
+    let data: string
+    try {
+      // Prefer receiptline (full ReceiptLine document support). This works in
+      // Node (CLI). In the browser its Node-built-in deps aren't polyfilled, so
+      // the dynamic import throws and we fall back to a direct builder below.
+      const { default: receiptline } = await import('receiptline')
+      data = receiptline.transform(doc, {
+        cpl: 32,
+        encoding: 'multilingual',
+        command: 'escpos',
+        cutting,
+      })
+    } catch {
+      // Browser fallback: build a minimal ESC/POS stream (init + text + feed [+ cut]).
+      return this.encodePlain(doc, cutting, feed)
+    }
 
-    /**
-     * Convert receiptline's binary-string output (one char = one byte, 0–255)
-     * into a Uint8Array, preserving raw bytes >127. Grow by 3 to prepend the feed
-     * without overwriting the document's first bytes (init command / header).
-     */
+    // Convert receiptline's binary-string output (one char = one byte, 0–255)
+    // into a Uint8Array, preserving raw bytes >127. Grow by 3 to prepend the feed
+    // without overwriting the document's first bytes (init command / header).
     const buffer = new Uint8Array(data.length + 3)
     for (let i = 0; i < data.length; i++) {
       buffer[i + 3] = data.charCodeAt(i) & 0xff
@@ -93,6 +102,23 @@ export class Device {
     buffer.set(Uint8Array.from([0x1b, 0x64, feed & 0xff]), 0)
 
     return buffer
+  }
+
+  /**
+   * Browser-safe minimal ESC/POS builder for text docs (no receiptline needed).
+   * Emits: ESC @ (init) + text + ESC d n (feed) [+ GS V 66 (partial cut)].
+   */
+  private encodePlain(doc: string, cutting: boolean, feed: number): Uint8Array<ArrayBuffer> {
+    const body = new TextEncoder().encode(doc.replace(/\r/g, ''))
+    const cut = cutting ? [0x1d, 0x56, 0x42] : [] // GS V 66 (partial cut)
+    // layout: ESC @ (2) + body + ESC d n (3) [+ cut]
+    const out = new Uint8Array(2 + body.length + 3 + cut.length)
+    let o = 0
+    out.set([0x1b, 0x40], o); o += 2 // ESC @ init
+    out.set(body, o); o += body.length
+    out.set([0x1b, 0x64, feed & 0xff], o); o += 3 // ESC d n feed
+    out.set(cut, o) // optional cut
+    return out
   }
 
   async connect() {
@@ -153,12 +179,19 @@ export class DeviceFinder {
     })
 
     try {
-      await bt.requestDevice({
+      const picked = await bt.requestDevice({
         acceptAllDevices: true,
         optionalServices: [ESCPOS.SERVICE_UUID]
       })
+
+      // In the browser, `navigator.bluetooth.requestDevice` opens a chooser and
+      // returns ONE device (it does not invoke the deviceFound callback used by
+      // the Node `webbluetooth` binding). Use the returned device directly.
+      if (this.IN_BROWSER && picked && picked.name && this.isValid(picked.name)) {
+        found.push(picked)
+      }
     } catch {
-      // scan completed or timed out; `found` already populated
+      // Scan completed, timed out, or the chooser was cancelled
     }
 
     return found
