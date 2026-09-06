@@ -2,6 +2,7 @@
   "name": "termal-print",
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "bun",
   "dependencies": {
     "webbluetooth": "^3.7.0"
   },
