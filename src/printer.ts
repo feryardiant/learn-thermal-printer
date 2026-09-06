@@ -2,10 +2,15 @@
 // (erased at runtime) so this module stays browser-safe; the value is loaded
 // dynamically in the Node (CLI) path only.
 import type { BluetoothOptions } from 'webbluetooth'
+import type { Printer as TransformOpts } from 'receiptline'
 
 interface RuleBarOptions {
   /** Half-height blank lines (ESC J partial feeds) above and below. */
   padding: number
+}
+
+export interface ReceiptlineImpl {
+  transform(doc: string, opts: TransformOpts): string
 }
 
 /**
@@ -185,17 +190,16 @@ export class Device {
    * - Node (CLI): lazy ESM `await import('receiptline')`.
    * Returns null if unavailable.
    */
-  private async getReceiptline(): Promise<{ transform: (doc: string, opts: object) => string } | null> {
+  private async getReceiptline(): Promise<ReceiptlineImpl | null> {
     // Browser global (window.receiptline).
-    const g = globalThis as { receiptline?: { transform?: unknown } }
-    if (g.receiptline && typeof g.receiptline.transform === 'function') {
-      return g.receiptline as { transform: (doc: string, opts: object) => string }
+    if (typeof globalThis.receiptline?.transform === 'function') {
+      return globalThis.receiptline
     }
 
     // Node: lazy import.
     try {
       const mod = await import('receiptline')
-      const rl = (mod.default ?? mod) as { transform: (doc: string, opts: object) => string }
+      const rl = (mod.default ?? mod)
       return rl
     } catch {
       return null
