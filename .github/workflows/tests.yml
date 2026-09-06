@@ -1,4 +1,4 @@
-name: CI
+name: Tests
 
 on:
   push:
@@ -10,8 +10,8 @@ env:
   BUN_VERSION: ${{ vars.BUN_VERSION || '1.4.0' }}
 
 jobs:
-  tests:
-    name: Tests
+  unit:
+    name: Unit
     runs-on: ubuntu-latest
 
     steps:
