@@ -1,18 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { Device, DeviceFinder, ESCPOS, solidRuleLines } from '../src/printer.ts'
+import { Device, DeviceFinder, ESCPOS, FinderError, solidRuleLines } from '../src/printer.ts'
 
 // Mock webbluetooth: getBluetooth lazy-imports it only in the Node path.
 const m = vi.hoisted(() => ({
   requestDevice: vi.fn(),
-  instances: [] as Array<{ deviceFound: (d: { id: string; name: string }) => boolean }>,
+  getDevices: vi.fn(),
+  instances: [] as Array<Record<string, unknown>>,
 }))
 
 vi.mock('webbluetooth', () => ({
   Bluetooth: class {
-    constructor(opts: { deviceFound: (d: { id: string; name: string }) => boolean }) {
+    constructor(opts: Record<string, unknown>) {
       m.instances.push(opts)
     }
     requestDevice = m.requestDevice
+    getDevices = m.getDevices
   },
 }))
 
@@ -23,6 +25,8 @@ function fakeDevice(id: string, name: string): { id: string; name: string; gatt?
 beforeEach(() => {
   m.instances.length = 0
   m.requestDevice.mockReset()
+  m.getDevices.mockReset()
+  vi.unstubAllGlobals()
 })
 
 describe('solidRuleLines', () => {
@@ -116,82 +120,110 @@ describe('DeviceFinder', () => {
   })
 
   describe('getList', () => {
-    function scanGate() {
-      let resolveScan!: (v: unknown) => void
-      m.requestDevice.mockImplementationOnce(
-        () => new Promise((r) => {
-          resolveScan = r
-        }),
-      )
-      return () => resolveScan(undefined)
-    }
-
     it('returns only devices whose names match printer patterns', async () => {
-      const release = scanGate()
-      const promise = new DeviceFinder().getList()
+      m.getDevices.mockResolvedValue([
+        fakeDevice('id1', 'RPP02N'),
+        fakeDevice('id2', 'EarFun Air Pro 4i'),
+        fakeDevice('id3', 'TM-T20 Receipt Printer'),
+        fakeDevice('id4', 'Unknown or Unsupported Device'),
+      ])
 
-      await vi.waitFor(() => expect(m.instances.length).toBe(1))
-      const bt = m.instances[0]
-      expect(bt.deviceFound(fakeDevice('id1', 'RPP02N'))).toBe(true)
-      expect(bt.deviceFound(fakeDevice('id2', 'EarFun Air Pro 4i'))).toBe(false)
-      expect(bt.deviceFound(fakeDevice('id3', 'TM-T20 Receipt Printer'))).toBe(true)
-      expect(bt.deviceFound(fakeDevice('id4', 'Unknown or Unsupported Device'))).toBe(false)
-
-      release()
-      const printers = await promise
+      const printers = await new DeviceFinder().getList()
       expect(printers.map((p) => p.name)).toEqual(['RPP02N', 'TM-T20 Receipt Printer'])
     })
 
     it('returns an empty list when no printers are found', async () => {
-      const release = scanGate()
-      const promise = new DeviceFinder().getList()
-      await vi.waitFor(() => expect(m.instances.length).toBe(1))
-      m.instances[0].deviceFound(fakeDevice('id1', 'EarFun Air Pro 4i'))
-      release()
-      expect(await promise).toEqual([])
+      m.getDevices.mockResolvedValue([fakeDevice('id1', 'EarFun Air Pro 4i')])
+
+      expect(await new DeviceFinder().getList()).toEqual([])
+    })
+
+    it('does not duplicate a device reported more than once', async () => {
+      const device = fakeDevice('id1', 'RPP02N')
+      m.getDevices.mockResolvedValue([device, device])
+
+      const list = await new DeviceFinder().getList()
+      expect(list.map((d) => d.id)).toEqual(['id1'])
+    })
+  })
+
+  describe('getList (browser)', () => {
+    function stubBrowser(requestDevice: ReturnType<typeof vi.fn>) {
+      vi.stubGlobal('navigator', { bluetooth: { requestDevice } })
+    }
+
+    it('returns only the freshly picked device and does not accumulate', async () => {
+      const requestDevice = vi.fn()
+        .mockResolvedValueOnce(fakeDevice('id-1', 'RPP02N'))
+        .mockResolvedValueOnce(fakeDevice('id-2', 'RPP02N'))
+      stubBrowser(requestDevice)
+
+      const finder = new DeviceFinder()
+      expect(finder.IN_BROWSER).toBe(true)
+
+      const first = await finder.getList()
+      const second = await finder.getList()
+
+      expect(first.map((d) => d.id)).toEqual(['id-1'])
+      expect(second.map((d) => d.id)).toEqual(['id-2'])
+    })
+
+    it('accepts an unnamed pick', async () => {
+      stubBrowser(vi.fn().mockResolvedValue(fakeDevice('id-1', '')))
+
+      const list = await new DeviceFinder().getList()
+      expect(list.map((d) => d.id)).toEqual(['id-1'])
+    })
+
+    it('returns an empty list when the chooser is cancelled', async () => {
+      stubBrowser(vi.fn().mockRejectedValue(new Error('cancelled')))
+
+      expect(await new DeviceFinder().getList()).toEqual([])
+    })
+
+    it('returns an empty list on chooser cancel even when getDevices has permitted devices', async () => {
+      vi.stubGlobal('navigator', {
+        bluetooth: {
+          requestDevice: vi.fn().mockRejectedValue(new Error('cancelled')),
+          getDevices: vi.fn().mockResolvedValue([fakeDevice('permitted-1', 'RPP02N')]),
+        },
+      })
+
+      const list = await new DeviceFinder().getList()
+      expect(list).toEqual([])
     })
   })
 
   describe('getDevice', () => {
-    function scanFor(name: string) {
-      let resolveScan!: (v: unknown) => void
-      m.requestDevice.mockImplementation(() => new Promise((r) => (resolveScan = r)))
-      return {
-        release: () => resolveScan(undefined),
-        pending: new DeviceFinder().getDevice(name),
-        async feedOnce(dev: { id: string; name: string; gatt?: unknown }) {
-          await vi.waitFor(() => expect(m.instances.length).toBe(1))
-          m.instances[0].deviceFound(dev)
-        },
-      }
-    }
-
     it('returns a Device wrapping the found printer', async () => {
-      const s = scanFor('RPP02N')
-      await s.feedOnce({ id: 'dev-1', name: 'RPP02N', gatt: {} })
-      s.release()
-      const device = await s.pending
+      m.getDevices.mockResolvedValue([{ id: 'dev-1', name: 'RPP02N', gatt: {} }])
+
+      const device = await new DeviceFinder().getDevice('RPP02N')
       expect(device.id).toBe('dev-1')
       expect(device.name).toBe('RPP02N')
     })
 
     it('throws when no device is found', async () => {
-      const s = scanFor('Missing')
-      await s.feedOnce({ id: 'dev-1', name: 'Other', gatt: {} })
-      s.release()
-      await expect(s.pending).rejects.toThrow()
-    })
-  })
+      m.getDevices.mockResolvedValue([{ id: 'dev-1', name: 'Other', gatt: {} }])
 
-  describe('find', () => {
-    it('throws when neither id nor name is given', async () => {
-      // find() calls getList() first; drive the scan so it resolves.
-      let resolveScan!: (v: unknown) => void
-      m.requestDevice.mockImplementation(() => new Promise((r) => (resolveScan = r)))
-      const pending = new DeviceFinder().find({})
-      await vi.waitFor(() => expect(m.instances.length).toBe(1))
-      resolveScan(undefined)
-      await expect(pending).rejects.toThrow()
+      await expect(new DeviceFinder().getDevice('Missing')).rejects.toThrow(FinderError)
+      await expect(new DeviceFinder().getDevice('Missing')).rejects.toThrow(/Could not find printer/)
+    })
+
+    it('throws when multiple printers match', async () => {
+      m.getDevices.mockResolvedValue([
+        fakeDevice('id1', 'RPP02N'),
+        fakeDevice('id2', 'RPP02N Plus'),
+      ])
+
+      await expect(new DeviceFinder().getDevice('rpp02n')).rejects.toThrow(/Multiple printers found/)
+    })
+
+    it('resolves a device by exact BLE id', async () => {
+      m.getDevices.mockResolvedValue([fakeDevice('AA:BB:CC', 'RPP02N')])
+
+      const device = await new DeviceFinder().getDevice('AA:BB:CC')
+      expect(device.id).toBe('AA:BB:CC')
     })
   })
 })

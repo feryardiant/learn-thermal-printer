@@ -55,7 +55,6 @@ Vitest, 32 tests across 3 files:
 
 - **Entrypoints**: `src/main.ts` (browser), `src/cli.ts` (Node CLI). Neither imports the other.
 - **Printer abstraction**: `DeviceFinder` (scan/find BLE devices) + `Device` (connect/send) in `src/printer.ts`.
-- **Device persistence**: Remembered device stored in `localStorage` key `thermal-print-device`. Auto-reconnect on page load.
 - **DeviceFinder patterns**: Matches printer names (case-insensitive) against `['rpp', 'pos', 'printer', 'thermal', 'receipt', 'escpos', ...]`.
 - **No CI**: No `.github/` workflows.
 
