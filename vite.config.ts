@@ -59,5 +59,7 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     // Don't process CSS imports (main.ts imports style.css).
     css: false,
+    // Hide console output from passing tests; keep it for failures.
+    silent: 'passed-only',
   },
 })
