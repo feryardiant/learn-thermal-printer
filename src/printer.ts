@@ -250,7 +250,7 @@ export class DeviceFinder {
    */
   readonly IN_BROWSER = typeof navigator !== 'undefined' && 'bluetooth' in navigator
 
-  async getList(): Promise<BluetoothDevice[]> {
+  async getList(showAll = false): Promise<BluetoothDevice[]> {
     const bt = await this.getBluetooth()
 
     // Browser: requestDevice opens the chooser and returns the single picked
@@ -277,7 +277,7 @@ export class DeviceFinder {
 
       for (const device of found) {
         // getDevices() can report the same device more than once; keep one copy.
-        if (this.isValid(device.name) && !printers.some((d) => d.id === device.id)) {
+        if ((showAll || this.isValid(device.name)) && !printers.some((d) => d.id === device.id)) {
           printers.push(device)
         }
       }

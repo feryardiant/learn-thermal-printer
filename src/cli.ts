@@ -14,11 +14,11 @@ export function printUsage(): void {
 }
 
 export async function listCommand(showAll: boolean): Promise<void> {
-  const printers = await new DeviceFinder().getList()
+  const printers = await new DeviceFinder().getList(showAll)
 
   if (showAll) {
     console.log('All BLE devices found:')
-    for (const p of printers) console.log(`  ${(p.name ?? '').padEnd(24)} ${p.id}`)
+    for (const p of printers) console.log(` ${p.id}  ${(p.name ?? '')}`)
     return
   }
 
@@ -29,7 +29,7 @@ export async function listCommand(showAll: boolean): Promise<void> {
   }
 
   console.log(`Available ESC/POS printer${printers.length === 1 ? '' : 's'}:`)
-  for (const p of printers) console.log(`  ${(p.name ?? '').padEnd(24)} ${p.id}`)
+  for (const p of printers) console.log(` ${p.id}  ${(p.name ?? '')}`)
 }
 
 /**
