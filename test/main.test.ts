@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // main.ts (in src/) imports './style.css'; replace it with an empty module.
 vi.mock('../src/style.css', () => ({}))
@@ -89,6 +89,14 @@ beforeEach(() => {
   setupDom()
   printer.getList.mockReset()
   printer.send.mockReset()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    text: async () => '',
+  }))
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('page load', () => {
