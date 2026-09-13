@@ -269,13 +269,13 @@ export class DeviceFinder {
       // returns ONE device (it does not invoke the deviceFound callback used by
       // the Node `webbluetooth` binding). Use the returned device directly.
       if (picked) {
-        this.devices.push(picked)
+        return [picked]
       }
     } catch {
       // Scan completed, timed out, or the chooser was cancelled
     }
 
-    return this.devices
+    return []
   }
 
   async find(opt: { id?: string, name?: string }): Promise<BluetoothDevice | undefined> {
@@ -315,8 +315,8 @@ export class DeviceFinder {
     return new Device(device)
   }
 
-  private isValid(name: string): boolean {
-    const n = name.toLowerCase()
+  private isValid(name: string | undefined): boolean {
+    const n = (name ?? '').toLowerCase()
 
     return this.PATTERNS.some((p) => n.includes(p))
   }
@@ -343,8 +343,6 @@ export class DeviceFinder {
     // Most browsers don't have this method accessible in Chrome its burried under
     // `chrome://flags/#enable-web-bluetooth-new-permissions-backend` flag
     const permittedDevices = await navigator.bluetooth.getDevices?.() || []
-
-    console.debug('permittedDevices', permittedDevices)
 
     for (const device of permittedDevices) {
       if (this.isValid(device.name)) {
