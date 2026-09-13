@@ -123,17 +123,17 @@ describe('DeviceFinder', () => {
     it('returns only devices whose names match printer patterns', async () => {
       m.getDevices.mockResolvedValue([
         fakeDevice('id1', 'RPP02N'),
-        fakeDevice('id2', 'EarFun Air Pro 4i'),
-        fakeDevice('id3', 'TM-T20 Receipt Printer'),
-        fakeDevice('id4', 'Unknown or Unsupported Device'),
+        fakeDevice('id2', 'Unknown device'),
+        fakeDevice('id3', 'RPP02N'),
+        fakeDevice('id4', 'Unknown device'),
       ])
 
       const printers = await new DeviceFinder().getList()
-      expect(printers.map((p) => p.name)).toEqual(['RPP02N', 'TM-T20 Receipt Printer'])
+      expect(printers.map((p) => p.name)).toEqual(['RPP02N', 'RPP02N'])
     })
 
     it('returns an empty list when no printers are found', async () => {
-      m.getDevices.mockResolvedValue([fakeDevice('id1', 'EarFun Air Pro 4i')])
+      m.getDevices.mockResolvedValue([fakeDevice('id1', 'Unknown device')])
 
       expect(await new DeviceFinder().getList()).toEqual([])
     })
@@ -144,6 +144,16 @@ describe('DeviceFinder', () => {
 
       const list = await new DeviceFinder().getList()
       expect(list.map((d) => d.id)).toEqual(['id1'])
+    })
+
+    it('includes non-printer devices when showAll is true', async () => {
+      m.getDevices.mockResolvedValue([
+        fakeDevice('id1', 'RPP02N'),
+        fakeDevice('id2', 'Unknown device'),
+      ])
+
+      const all = await new DeviceFinder().getList(true)
+      expect(all.map((p) => p.name)).toEqual(['RPP02N', 'Unknown device'])
     })
   })
 
@@ -204,7 +214,7 @@ describe('DeviceFinder', () => {
     })
 
     it('throws when no device is found', async () => {
-      m.getDevices.mockResolvedValue([{ id: 'dev-1', name: 'Other', gatt: {} }])
+      m.getDevices.mockResolvedValue([{ id: 'dev-1', name: 'Unknown device', gatt: {} }])
 
       await expect(new DeviceFinder().getDevice('Missing')).rejects.toThrow(FinderError)
       await expect(new DeviceFinder().getDevice('Missing')).rejects.toThrow(/Could not find printer/)
@@ -213,7 +223,7 @@ describe('DeviceFinder', () => {
     it('throws when multiple printers match', async () => {
       m.getDevices.mockResolvedValue([
         fakeDevice('id1', 'RPP02N'),
-        fakeDevice('id2', 'RPP02N Plus'),
+        fakeDevice('id2', 'RPP02N'),
       ])
 
       await expect(new DeviceFinder().getDevice('rpp02n')).rejects.toThrow(/Multiple printers found/)

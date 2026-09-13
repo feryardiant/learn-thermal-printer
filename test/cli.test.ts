@@ -50,6 +50,7 @@ describe('listCommand', () => {
     await listCommand(true)
     const logged = out.mock.calls.flat().join('\n')
     expect(logged).toContain('All BLE devices found:')
+    expect(m.getList).toHaveBeenCalledWith(true)
     out.mockRestore()
   })
 
