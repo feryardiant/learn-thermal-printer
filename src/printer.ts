@@ -250,69 +250,68 @@ export class DeviceFinder {
    */
   readonly IN_BROWSER = typeof navigator !== 'undefined' && 'bluetooth' in navigator
 
-  private devices: BluetoothDevice[] = []
-
   async getList(): Promise<BluetoothDevice[]> {
     const bt = await this.getBluetooth()
 
-    if (!this.IN_BROWSER && this.devices.length > 0) {
-      return this.devices
-    }
+    // Browser: requestDevice opens the chooser and returns the single picked
+    // device. The chooser already gated selection, so accept it even when it
+    // advertises no name (Chrome labels those "Unknown or Unsupported Device").
+    if (this.IN_BROWSER) {
+      try {
+        const picked = await bt.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [ESCPOS.SERVICE_UUID]
+        })
 
-    try {
-      const picked = await bt.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [ESCPOS.SERVICE_UUID]
-      })
-
-      // In the browser, `navigator.bluetooth.requestDevice` opens a chooser and
-      // returns ONE device (it does not invoke the deviceFound callback used by
-      // the Node `webbluetooth` binding). Use the returned device directly.
-      if (picked) {
-        return [picked]
+        return picked ? [picked] : []
+      } catch {
+        // Chooser cancelled or scan timed out
+        return []
       }
-    } catch {
-      // Scan completed, timed out, or the chooser was cancelled
     }
 
-    return []
+    // Node: one-shot scan — the CLI is a short-lived process, so no caching.
+    try {
+      const found = await bt.getDevices()
+      const printers: BluetoothDevice[] = []
+
+      for (const device of found) {
+        // getDevices() can report the same device more than once; keep one copy.
+        if (this.isValid(device.name) && !printers.some((d) => d.id === device.id)) {
+          printers.push(device)
+        }
+      }
+
+      return printers
+    } catch {
+      // Scan failed
+      return []
+    }
   }
 
-  async find(opt: { id?: string, name?: string }): Promise<BluetoothDevice | undefined> {
+  async getDevice(nameOrId: string): Promise<Device> {
     const devices = await this.getList()
 
-    if (!opt.id && !opt.name) {
-      throw new Error('`DeviceFinder.find` requires either `id` or `name` to be specified')
+    // A BLE device id is unique, so an exact id match wins outright.
+    const byId = devices.find((p) => p.id === nameOrId)
+    if (byId) {
+      return new Device(byId)
     }
 
-    if (opt.id) {
-      return devices.find((p) => p.id === opt.id)
+    const needle = nameOrId.toLowerCase()
+    const matches = devices.filter((p) => (p.name ?? '').toLowerCase().includes(needle))
+
+    if (matches.length === 0) {
+      throw new FinderError(nameOrId, `Could not find printer matching "${nameOrId}"`)
     }
 
-    const matches = devices.filter((p) => {
-      const toLower = (name?: string) => (name ?? '').toLowerCase()
-      return toLower(p.name).includes(toLower(opt.name))
-    })
-
-    if (matches.length === 1) {
-      return matches[0]
+    if (matches.length > 1) {
+      const msgs = [`Multiple printers found matching "${nameOrId}":`]
+      for (const m of matches) msgs.push(` - ${m.name}: ${m.id}`)
+      throw new Error(msgs.join('\n'))
     }
 
-    const msgs = [`Multiple printers found with name "${opt.name}":`]
-
-    for (const m of matches) msgs.push(` - ${m.name}: ${m.id}`)
-
-    throw new Error(msgs.join('\n'))
-  }
-
-  async getDevice(name: string): Promise<Device> {
-    const device = await this.find({ name })
-
-    if (!device) {
-      throw new FinderError(name, `Could not find device with ID "${name}"`)
-    }
-
-    return new Device(device)
+    return new Device(matches[0])
   }
 
   private isValid(name: string | undefined): boolean {
@@ -322,35 +321,17 @@ export class DeviceFinder {
   }
 
   private async getBluetooth(scanTime = 8) {
-    if (!this.IN_BROWSER) {
-      // Node only — load the native webbluetooth binding lazily.
-      const { Bluetooth } = await import('webbluetooth')
-
-      return new Bluetooth({
-        allowAllDevices: true,
-        deviceFound: (device) => {
-          if (!this.isValid(device.name)) {
-            return false
-          }
-
-          this.devices.push(device)
-          return true
-        },
-        scanTime,
-      })
+    if (this.IN_BROWSER) {
+      return navigator.bluetooth
     }
 
-    // Most browsers don't have this method accessible in Chrome its burried under
-    // `chrome://flags/#enable-web-bluetooth-new-permissions-backend` flag
-    const permittedDevices = await navigator.bluetooth.getDevices?.() || []
+    // Node only — load the native webbluetooth binding lazily.
+    const { Bluetooth } = await import('webbluetooth')
 
-    for (const device of permittedDevices) {
-      if (this.isValid(device.name)) {
-        this.devices.push(device)
-      }
-    }
-
-    return navigator.bluetooth
+    return new Bluetooth({
+      allowAllDevices: true,
+      scanTime,
+    })
   }
 }
 
