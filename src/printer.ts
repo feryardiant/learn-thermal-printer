@@ -1,7 +1,6 @@
 // webbluetooth is a Node-only native module. Import only its types statically
 // (erased at runtime) so this module stays browser-safe; the value is loaded
 // dynamically in the Node (CLI) path only.
-import type { BluetoothOptions } from 'webbluetooth'
 import type { Printer as TransformOpts } from 'receiptline'
 
 interface RuleBarOptions {
@@ -251,17 +250,14 @@ export class DeviceFinder {
    */
   readonly IN_BROWSER = typeof navigator !== 'undefined' && 'bluetooth' in navigator
 
+  private devices: BluetoothDevice[] = []
+
   async getList(): Promise<BluetoothDevice[]> {
-    const found: BluetoothDevice[] = []
-    const bt = await this.getBluetooth((device) => {
-      if (!this.isValid(device.name)) {
-        return false
-      }
+    const bt = await this.getBluetooth()
 
-      found.push(device)
-
-      return true
-    })
+    if (!this.IN_BROWSER && this.devices.length > 0) {
+      return this.devices
+    }
 
     try {
       const picked = await bt.requestDevice({
@@ -272,14 +268,14 @@ export class DeviceFinder {
       // In the browser, `navigator.bluetooth.requestDevice` opens a chooser and
       // returns ONE device (it does not invoke the deviceFound callback used by
       // the Node `webbluetooth` binding). Use the returned device directly.
-      if (this.IN_BROWSER && picked && picked.name && this.isValid(picked.name)) {
-        found.push(picked)
+      if (picked) {
+        this.devices.push(picked)
       }
     } catch {
       // Scan completed, timed out, or the chooser was cancelled
     }
 
-    return found
+    return this.devices
   }
 
   async find(opt: { id?: string, name?: string }): Promise<BluetoothDevice | undefined> {
@@ -325,14 +321,38 @@ export class DeviceFinder {
     return this.PATTERNS.some((p) => n.includes(p))
   }
 
-  private async getBluetooth(deviceFound: BluetoothOptions['deviceFound'], scanTime = 8) {
-    if (this.IN_BROWSER) {
-      return navigator.bluetooth
+  private async getBluetooth(scanTime = 8) {
+    if (!this.IN_BROWSER) {
+      // Node only — load the native webbluetooth binding lazily.
+      const { Bluetooth } = await import('webbluetooth')
+
+      return new Bluetooth({
+        allowAllDevices: true,
+        deviceFound: (device) => {
+          if (!this.isValid(device.name)) {
+            return false
+          }
+
+          this.devices.push(device)
+          return true
+        },
+        scanTime,
+      })
     }
 
-    // Node only — load the native webbluetooth binding lazily.
-    const { Bluetooth } = await import('webbluetooth')
-    return new Bluetooth({ deviceFound, scanTime, allowAllDevices: true })
+    // Most browsers don't have this method accessible in Chrome its burried under
+    // `chrome://flags/#enable-web-bluetooth-new-permissions-backend` flag
+    const permittedDevices = await navigator.bluetooth.getDevices?.() || []
+
+    console.debug('permittedDevices', permittedDevices)
+
+    for (const device of permittedDevices) {
+      if (this.isValid(device.name)) {
+        this.devices.push(device)
+      }
+    }
+
+    return navigator.bluetooth
   }
 }
 
